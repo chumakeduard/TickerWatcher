@@ -10,9 +10,12 @@ A comprehensive stock market data collection, visualization, and web interface s
 - 🔄 **Automated Data Refresh**: Fetch and update ticker data from Yahoo Finance
 - ⚙️ **Flexible Configuration**: Easily switch between tickers and chart parameters
 - 🤖 **Automation Ready**: Direct URL support for programmatic access and automation
-- 🔮 **GARCH Forecasting**: Dynamic-length price predictions using the model's actual per-day volatility term structure plus historical drift, trained on 3-year historical data
+- 🔮 **GARCH Forecasting**: Dynamic-length price predictions using the model's actual per-day volatility term structure plus historical drift, trained on 5-year historical data
 - 📈 **Predictive Visualization**: Extended charts showing forecasted candlesticks and volume alongside historical data
-- ⚡ **Volatility Analytics**: Real-time GARCH statistics (current, average, max volatility)
+- ⚡ **Volatility Analytics**: Real-time GARCH statistics (current, average, max volatility) + fitted model coefficients
+- 📊 **Model Configurability**: Switch between GARCH orders (1,1)/(1,2)/(2,1)/(2,2) and volatility models (GARCH/EGARCH) from sidebar
+- 🎚️ **Volatility Calibration**: Adjust the vol_scale factor (0.3–1.5×, default 0.8×) to correct for GARCH's systematic over-forecast bias
+- 🎯 **Price-Move Thresholds**: Mark significant price movements (>10% default) with vertical lines and date labels
 - 🔄 **One-Click Refresh**: Sidebar button fetches the latest data for all tickers and reloads the chart automatically
 
 ## Project Structure
@@ -127,20 +130,20 @@ Access the web interface:
 ### Example URLs
 
 ```
-# AAPL 6-month chart
-http://localhost:5000/chart?ticker=AAPL&period=6M
+# AAPL 6-month chart, default settings
+http://localhost:8080/chart?ticker=AAPL&period=6M
 
-# TSLA 1-year chart
-http://localhost:5000/chart?ticker=TSLA&period=1Y
+# TSLA 1-year chart with custom GARCH order and vol_scale
+http://localhost:8080/chart?ticker=TSLA&period=1Y&garch_p=1&garch_q=2&vol_scale=0.9
 
-# MSFT maximum history
-http://localhost:5000/chart?ticker=MSFT&period=MAX
+# MSFT with EGARCH model (experimental)
+http://localhost:8080/chart?ticker=MSFT&period=MAX&vol_model=egarch
 
-# GOOGL 3-month chart
-http://localhost:5000/chart?ticker=GOOGL&period=3M
+# GOOGL with 15% price-move threshold and 10-day forecast
+http://localhost:8080/chart?ticker=GOOGL&period=3M&threshold=15&forecast_days=10
 ```
 
-Note: Charts always display daily granularity. Grouping selector has been removed from the UI for simplicity.
+**Note:** Charts always display daily granularity. Grouping selector has been removed from the UI for simplicity.
 
 ### API Endpoints
 
@@ -239,6 +242,79 @@ curl http://localhost:5000/api/refresh/status
 
 Runs the same incremental-fetch logic as `python refresh.py`, in a background thread. On success, clears the in-memory chart cache so the next chart view regenerates with the newly fetched data.
 
+## Model Calibration & Tuning
+
+### Volatility Calibration Factor
+
+The GARCH model systematically over-forecasts realized volatility. A calibration factor (`vol_scale`, default **0.8×**) is applied to correct this bias.
+
+**Tuning the Calibration Factor:**
+
+1. **UI Slider** (recommended):
+   - Sidebar panel: "⚙️ Chart Controls" → "Vol. Calibration"
+   - Range: 0.3× to 1.5×
+   - Default: 0.8× (pre-tuned via walk-forward backtesting)
+   - Change the slider and click "Apply" to test different scales
+
+2. **Query Parameter**:
+   ```
+   http://localhost:8080/chart?ticker=NVDA&vol_scale=0.75
+   ```
+
+3. **Backtest via CLI**:
+   ```bash
+   python backtest_garch.py --ticker NVDA --windows 36 --vol-scale 0.75
+   ```
+
+**When to Recalibrate:**
+- New market regime or volatility regime shift
+- Adding new asset classes (e.g., crypto) with different volatility patterns
+- After major data outages/corrections
+
+### GARCH Model Order (p, q)
+
+Select from (1,1), (1,2), (2,1), (2,2) via sidebar dropdown or query parameter.
+
+**Backtesting Results** (Aug 26, 2026):
+- **(1,1)** — Best AIC/BIC across NVDA, AAPL, MSFT, TSLA ✅ **recommended**
+- (1,2) — Slightly worse fit, more parameters
+- (2,1) — Slightly worse fit, more parameters
+- (2,2) — Worst fit, overfitting risk
+
+Default is (1,1). Change via:
+- **UI:** Sidebar dropdown "GARCH Order (p,q)"
+- **Query:** `?garch_p=1&garch_q=2`
+
+### Volatility Model Type (GARCH vs EGARCH)
+
+- **GARCH** (default): Symmetric, numerically stable, recommended for production
+- **EGARCH** (experimental): Asymmetric, captures leverage effect, but numerically fragile on short training windows
+
+Change via:
+- **UI:** Sidebar dropdown "Volatility Model"
+- **Query:** `?vol_model=garch` or `?vol_model=egarch`
+
+### Run Walk-Forward Backtests
+
+Validate model settings on historical data using the `calibrate-model` skill:
+
+```bash
+# Run backtest for a single ticker
+python backtest_garch.py --ticker NVDA --windows 36 --train-years 2 --vol-scale 0.8
+
+# Run for multiple tickers and export results
+for ticker in VDE VOO VTI; do
+  python backtest_garch.py --ticker $ticker --windows 36 --vol-scale 0.8 --csv /tmp/${ticker}_results.csv
+done
+```
+
+Metrics reported:
+- **Price forecast:** MAE, MAPE, RMSE, direction accuracy (%)
+- **Volatility forecast:** mean forecasted vol vs realized vol, % error
+- **Model fit:** AIC, BIC
+
+See `.claude/skills/calibrate-model/SKILL.md` for detailed backtest methodology and latest results.
+
 ## Configuration
 
 ### Tickers
@@ -251,10 +327,10 @@ TICKERS = ["AAPL", "GOOGL", "MSFT", "AMZN", "TSLA", "META", "NVDA", "AMD", "VGT"
 
 ### Data Retention
 
-In `db.py`, modify `MIN_YEARS` to change historical data span:
+In `db.py`, modify `MIN_YEARS` to change historical data span for GARCH fitting:
 
 ```python
-MIN_YEARS = 5  # Store 5 years of data
+MIN_YEARS = 5  # Train GARCH model on 5 years of data (default)
 ```
 
 ## Chart Features

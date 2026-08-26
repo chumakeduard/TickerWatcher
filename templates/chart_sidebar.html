@@ -381,15 +381,52 @@
             </div>
 
             <!-- Forecast Days Input -->
-            <div>
+            <div style="margin-bottom: 12px;">
                 <label style="font-size: 11px; color: #888; display: block; margin-bottom: 4px;">Forecast Days</label>
                 <input type="number" id="forecast-input" value="{{ forecast_days_override or 14 }}" min="1" max="60" step="1"
                        style="width: 100%; padding: 6px; background-color: #0a0e27; border: 1px solid #2a3f5a; color: #00d84f; border-radius: 3px; box-sizing: border-box;">
             </div>
 
+            <!-- GARCH Model Order -->
+            <div style="margin-bottom: 12px;">
+                <label style="font-size: 11px; color: #888; display: block; margin-bottom: 4px;">GARCH Order (p,q)</label>
+                <select id="garch-order-select"
+                        style="width: 100%; padding: 6px; background-color: #0a0e27; border: 1px solid #2a3f5a; color: #00d84f; border-radius: 3px; box-sizing: border-box;">
+                    {% for p, q in valid_orders %}
+                    <option value="{{ p }},{{ q }}" {% if p == garch_p and q == garch_q %}selected{% endif %}>
+                        ({{ p }},{{ q }}){% if p == 1 and q == 1 %} — default, best AIC{% endif %}
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <!-- Volatility Model Type -->
+            <div style="margin-bottom: 12px;">
+                <label style="font-size: 11px; color: #888; display: block; margin-bottom: 4px;">Volatility Model</label>
+                <select id="vol-model-select"
+                        style="width: 100%; padding: 6px; background-color: #0a0e27; border: 1px solid #2a3f5a; color: #00d84f; border-radius: 3px; box-sizing: border-box;">
+                    <option value="garch" {% if vol_model == 'garch' %}selected{% endif %}>GARCH — default, stable</option>
+                    <option value="egarch" {% if vol_model == 'egarch' %}selected{% endif %}>EGARCH — asymmetric, experimental</option>
+                </select>
+            </div>
+
+            <!-- Volatility Calibration Factor -->
+            <div>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                    <label style="font-size: 11px; color: #888;" title="Backtesting found GARCH over-forecasts realized volatility by ~20-25%; this scales the forecast down to match.">Vol. Calibration</label>
+                    <span id="vol-scale-value" style="font-size: 11px; color: #00d84f; font-weight: 600;">{{ vol_scale }}×</span>
+                </div>
+                <input type="range" id="vol-scale-slider" value="{{ vol_scale }}" min="0.3" max="1.5" step="0.05"
+                       style="width: 100%; cursor: pointer; accent-color: #00d84f;"
+                       oninput="document.getElementById('vol-scale-value').textContent = this.value + '×';">
+                <div style="font-size: 10px; color: #666; margin-top: 4px; display: flex; justify-content: space-between;">
+                    <span>0.3×</span><span>0.8× default</span><span>1.5×</span>
+                </div>
+            </div>
+
             <button onclick="applyChartControls()"
                     style="width: 100%; margin-top: 8px; padding: 6px; background-color: #00d84f; color: #000; border: none; border-radius: 3px; font-weight: 600; cursor: pointer;">
-                Apply Forecast Days
+                Apply
             </button>
         </div>
 
@@ -398,7 +435,7 @@
             <div class="sidebar-title">📊 Tickers</div>
             <div class="ticker-list">
                 {% for t in tickers %}
-                <a href="{{ url_for('chart', ticker=t, period=period, threshold=threshold_pct, forecast_days=effective_forecast_days) }}" class="ticker-item {% if t == ticker %}active{% endif %}">
+                <a href="{{ url_for('chart', ticker=t, period=period, threshold=threshold_pct, forecast_days=effective_forecast_days, garch_p=garch_p, garch_q=garch_q, vol_model=vol_model, vol_scale=vol_scale) }}" class="ticker-item {% if t == ticker %}active{% endif %}">
                     {{ t }}
                 </a>
                 {% endfor %}
@@ -410,7 +447,7 @@
             <div class="sidebar-title">📅 Time Period</div>
             <div class="button-group">
                 {% for p in periods %}
-                <button class="selector-btn {% if p == period %}active{% endif %}" onclick="window.location.href = '{{ url_for('chart', ticker=ticker, period=p, threshold=threshold_pct, forecast_days=effective_forecast_days) }}'">{{ p }}</button>
+                <button class="selector-btn {% if p == period %}active{% endif %}" onclick="window.location.href = '{{ url_for('chart', ticker=ticker, period=p, threshold=threshold_pct, forecast_days=effective_forecast_days, garch_p=garch_p, garch_q=garch_q, vol_model=vol_model, vol_scale=vol_scale) }}'">{{ p }}</button>
                 {% endfor %}
             </div>
         </div>
@@ -464,14 +501,21 @@
             window.location.href = '{{ url_for('chart') }}?' + params.toString();
         }
 
-        // Apply chart control changes (forecast days only, threshold uses slider)
+        // Apply chart control changes (forecast days, GARCH order, vol model, vol calibration; threshold uses slider)
         function applyChartControls() {
             const forecastDays = parseInt(document.getElementById('forecast-input').value) || 14;
             const threshold = parseFloat(document.getElementById('threshold-slider').value) || 10;
+            const [garchP, garchQ] = document.getElementById('garch-order-select').value.split(',');
+            const volModel = document.getElementById('vol-model-select').value;
+            const volScale = parseFloat(document.getElementById('vol-scale-slider').value) || 0.8;
             const params = new URLSearchParams(window.location.search);
 
             params.set('threshold', threshold);
             params.set('forecast_days', forecastDays);
+            params.set('garch_p', garchP);
+            params.set('garch_q', garchQ);
+            params.set('vol_model', volModel);
+            params.set('vol_scale', volScale);
 
             window.location.href = '{{ url_for('chart') }}?' + params.toString();
         }
@@ -551,10 +595,16 @@
             })
             .catch(() => {});
 
-        // Load GARCH stats
+        // Load GARCH stats (including fitted coefficients), using the same
+        // model settings (order, vol_model) the chart itself was generated with
         function loadGarchStats() {
             const ticker = '{{ ticker }}';
-            fetch('/api/garch-stats/' + ticker)
+            const params = new URLSearchParams({
+                garch_p: '{{ garch_p }}',
+                garch_q: '{{ garch_q }}',
+                vol_model: '{{ vol_model }}'
+            });
+            fetch('/api/garch-stats/' + ticker + '?' + params.toString())
                 .then(r => r.json())
                 .then(data => {
                     if (data.status === 'error' || data.error) {
@@ -562,7 +612,30 @@
                         return;
                     }
 
+                    // Build coefficient rows dynamically (alpha1, beta1, omega always
+                    // present; gamma1 only appears for EGARCH's asymmetry term)
+                    const coeffOrder = ['mu', 'omega', 'alpha1', 'gamma1', 'beta1'];
+                    const coeffLabels = {mu: 'μ (mean)', omega: 'ω (omega)', alpha1: 'α (alpha)', gamma1: 'γ (gamma, asym.)', beta1: 'β (beta)'};
+                    let coeffHtml = '';
+                    if (data.coefficients) {
+                        for (const key of coeffOrder) {
+                            if (key in data.coefficients) {
+                                coeffHtml += `
+                                <div class="garch-stat">
+                                    <span class="garch-stat-label">${coeffLabels[key]}</span>
+                                    <span class="garch-stat-value">${data.coefficients[key].toFixed(4)}</span>
+                                </div>`;
+                            }
+                        }
+                    }
+
+                    const modelLabel = (data.vol_model || 'garch').toUpperCase() + `(${data.p},${data.q}${data.o ? ',' + data.o : ''})`;
+
                     const html = `
+                        <div class="garch-stat">
+                            <span class="garch-stat-label">Model</span>
+                            <span class="garch-stat-value">${modelLabel}</span>
+                        </div>
                         <div class="garch-stat">
                             <span class="garch-stat-label">Current Vol</span>
                             <span class="garch-stat-value">${data.current_volatility?.toFixed(2)}%</span>
@@ -578,6 +651,17 @@
                         <div class="garch-stat">
                             <span class="garch-stat-label">Returns Std</span>
                             <span class="garch-stat-value">${data.returns_std?.toFixed(2)}%</span>
+                        </div>
+                        <div style="border-top: 1px solid #2a3f5a; margin: 6px 0;"></div>
+                        <div style="font-size: 10px; color: #666; text-transform: uppercase; margin-bottom: 2px;">Fitted Coefficients</div>
+                        ${coeffHtml}
+                        <div class="garch-stat">
+                            <span class="garch-stat-label">AIC</span>
+                            <span class="garch-stat-value">${data.model_aic?.toFixed(1)}</span>
+                        </div>
+                        <div class="garch-stat">
+                            <span class="garch-stat-label">BIC</span>
+                            <span class="garch-stat-value">${data.model_bic?.toFixed(1)}</span>
                         </div>
                     `;
 

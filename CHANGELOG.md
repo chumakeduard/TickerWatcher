@@ -1,6 +1,107 @@
-# TickerWatcher - Bug Fix Log
+# TickerWatcher - Bug Fix & Feature Log
 
-Running log of every bug found and fixed, in chronological order. See `CLAUDE.md` for architecture/implementation details and `README.md` for user-facing docs.
+Running log of every bug found, fixed, and feature added, in chronological order. See `CLAUDE.md` for architecture/implementation details and `README.md` for user-facing docs.
+
+---
+
+## 2026-08-26 (Model Calibration & Configurability)
+
+### Feature: Volatility Calibration Factor (vol_scale)
+
+Walk-forward backtesting (36 windows on 7 tickers: NVDA, AAPL, MSFT, TSLA, VDE, VOO, VTI) revealed that GARCH(1,1) systematically over-forecasts realized volatility by ~20-25% at a weekly forecast horizon. Added a **calibration multiplier** (`vol_scale`, default **0.8×**) to correct this bias, reducing mean % error by 10-23 percentage points across all tested tickers.
+
+**Implementation:**
+- New parameter `vol_scale` in `garch_model.py::forecast_volatility()` (default 0.8, range 0.3–2.0)
+- Applied *only* to the forward-looking `forecasted_volatility` array (not to in-sample fit)
+- **UI control:** Slider in sidebar "⚙️ Chart Controls" → "Vol. Calibration" (0.3×–1.5×)
+- **Query parameter support:** `?vol_scale=0.8`
+- **CLI support:** `backtest_garch.py --vol-scale 0.8`
+- **Cache key includes vol_scale** to prevent stale-chart bugs
+
+**Backtest results** (mean % volatility forecast error, lower is better):
+| Ticker | Baseline (1.0×) | Calibrated (0.8×) | Improvement |
+|---|---|---|---|
+| NVDA | 82.5% | 59.4% | -23.1 pts |
+| VDE | 41.1% | 31.5% | -9.6 pts |
+| VOO | 62.1% | 41.7% | -20.4 pts |
+| VTI | 60.7% | 40.7% | -20.0 pts |
+
+**Files:** `garch_model.py`, `draw.py`, `app.py`, `templates/chart_sidebar.html`, `backtest_garch.py`.
+
+---
+
+### Feature: GARCH Order Configurability
+
+Added ability to select between GARCH model orders (1,1)/(1,2)/(2,1)/(2,2), with (1,1) as the default (backtested as best AIC/BIC fit).
+
+**Implementation:**
+- New parameters `p`, `q` in `garch_model.py::fit_garch()`, `forecast_volatility()`, `get_garch_stats()`
+- **UI control:** Dropdown in sidebar "⚙️ Chart Controls" → "GARCH Order (p,q)" with "default, best AIC" label on (1,1)
+- **Query parameter support:** `?garch_p=1&garch_q=2`
+- **Cache key includes p,q** to regenerate chart when order changes
+
+**Files:** `garch_model.py`, `draw.py`, `app.py`, `templates/chart_sidebar.html`.
+
+---
+
+### Feature: Volatility Model Selection (GARCH vs EGARCH)
+
+Added ability to select between symmetric GARCH (default, stable) and asymmetric EGARCH (experimental, captures leverage effect but numerically fragile on short windows).
+
+**Implementation:**
+- New parameter `vol_model` in `garch_model.py::fit_garch()`, `forecast_volatility()`, `get_garch_stats()`
+- GARCH model automatically selects forecast method: `'analytic'` for GARCH, `'simulation'` for EGARCH (multi-step)
+- **UI control:** Dropdown in sidebar "⚙️ Chart Controls" → "Volatility Model" with labels: "GARCH — default, stable" vs "EGARCH — asymmetric, experimental"
+- **Query parameter support:** `?vol_model=garch` or `?vol_model=egarch`
+- **Cache key includes vol_model** to regenerate chart when model type changes
+
+**Backtesting findings:**
+- EGARCH fails to converge on short training windows (1-year data), produces `ConvergenceWarning` and inflated/NaN forecasts
+- EGARCH only marginally better AIC than GARCH on long windows
+- No improvement in accuracy at weekly forecast horizon
+- Recommendation: use GARCH for production, keep EGARCH for research
+
+**Files:** `garch_model.py`, `draw.py`, `app.py`, `templates/chart_sidebar.html`.
+
+---
+
+### Feature: Fitted Coefficients Display
+
+GARCH model's fitted coefficients (μ, ω, α, β, γ) are now extracted and displayed in the stats panel, allowing users to inspect model behavior and inform tuning decisions.
+
+**Implementation:**
+- New function `garch_model.py::extract_coefficients()` — extracts fitted parameters from arch model
+- Updated `forecast_volatility()` and `get_garch_stats()` to include `coefficients` dict in return
+- **UI display:** Stats panel below volatility metrics shows fitted coefficients with labels
+- Coefficient values rounded to 4 decimal places
+
+**Files:** `garch_model.py`, `app.py`, `templates/chart_sidebar.html`.
+
+---
+
+### Feature: Project-Level Skill "calibrate-model"
+
+Created a project-level Claude skill at `.claude/skills/calibrate-model/SKILL.md` that encapsulates the walk-forward backtesting process. Users can now trigger model calibration with voice/text phrases like "calibrate the model" or "run calibration".
+
+**What it does:**
+- Runs 36-window backtests on a set of test tickers (VDE, VOO, VTI, NVDA, AAPL, MSFT, TSLA)
+- Tests both baseline (vol_scale=1.0) and calibrated (vol_scale=0.8) models
+- Generates comparison table and metrics
+- Suggests adjustments to `DEFAULT_VOL_SCALE` if needed
+- Updates documentation with findings
+
+**Skill file:** `.claude/skills/calibrate-model/SKILL.md`.
+
+---
+
+### Documentation Updates
+
+Updated `CLAUDE.md`, `README.md`, and created comprehensive skill documentation to reflect:
+- Volatility calibration methodology and backtest results
+- GARCH order and vol_model selection rationale
+- Fitted coefficients and their interpretation
+- Cache key design (now includes all parametric changes)
+- Walk-forward backtest findings across 7 tickers
 
 ---
 

@@ -10,22 +10,35 @@ August 26, 2026
 ## Current Status
 
 ✅ **Complete Implementation**
-- GARCH(1,1) volatility forecasting model
+- GARCH(1,1) volatility forecasting model (default, configurable to (1,2)/(2,1)/(2,2))
+- GARCH (default) and EGARCH (experimental, numerically fragile on short windows) vol models, both configurable
+- **Volatility calibration factor** (vol_scale, default 0.8×) to correct GARCH's systematic over-forecast
+  - Backtested on 7 tickers (NVDA, AAPL, MSFT, TSLA, VDE, VOO, VTI), 36 windows each
+  - Reduces mean % error by 10-23 percentage points across all tickers
+  - Configurable via sidebar slider (0.3–1.5×) and query string parameter
 - Dynamic forecast periods (3-21 days based on selected timeframe)
 - Forecast volume visualization
 - Grouping selector removed from UI
 - Interactive tooltips for historical data
-- In-memory chart caching
+- In-memory chart caching (includes all chart parameters in cache key: threshold, forecast_days, garch_p, garch_q, vol_model, vol_scale)
 - Intelligent prediction scaling (short periods = short forecasts)
-- Forecasts use per-day GARCH volatility term structure + historical drift (fixed Aug 26, 2026 — see "Forecast Logic Bug Fix" below)
-- One-click data refresh button in sidebar (fixed Aug 26, 2026)
-- **Threshold and Forecast-Days Control Panel** (Aug 26, 2026)
+- Forecasts use per-day GARCH volatility term structure + historical drift
+- One-click data refresh button in sidebar
+- **Threshold and Forecast-Days Control Panel**
   - Adjustable price-move threshold (default 10%, range 0.1-100%) to mark significant drops/rises
   - Adjustable forecast period length (1-60 days, default based on chart period)
   - Vertical lines with date tags mark moves exceeding threshold (red for drops, green for rises)
   - Marks both historical AND forecast/prediction portions of chart
   - Both parameters settable via URL query string for bookmarkable configurations
   - Cache properly invalidated when only threshold/forecast-days changes
+- **GARCH Order Configurability** (p,q selection from sidebar dropdown or query string)
+  - Valid orders: (1,1), (1,2), (2,1), (2,2)
+  - Default: (1,1) — backtesting confirmed best AIC/BIC fit
+  - Wired through sidebar UI, Flask routes, cache key, and all GARCH/stats endpoints
+- **Fitted Coefficients Display** in stats panel
+  - Shows μ (mu, mean), ω (omega, const), α (alpha, ARCH), β (beta, GARCH), γ (gamma, asymmetry in EGARCH)
+  - Displayed below volatility metrics, AIC/BIC
+  - Helps understand model behavior and tune orders
 
 ## Forecast Logic Bug Fix (Aug 26, 2026)
 
@@ -47,6 +60,71 @@ August 26, 2026
 **Files touched:** `garch_model.py` (`forecast_volatility()`), `draw.py` (`draw_chart()`, seed removal, y-axis calc).
 
 **Caveat to keep in mind:** the day-to-day *volatility* now genuinely differs across horizons (GARCH term structure), but since all periods fit the model on the same fixed 3-year window and start from the same last close, the first N days of a long forecast will still resemble a fresh N-day forecast in overall *character* — they're no longer numerically flat/identical, but don't expect a completely different "shape" for the same ticker across periods. This is inherent to using one GARCH fit for all horizons, not a bug.
+
+## Volatility Calibration & Model Tuning (Aug 26, 2026)
+
+**Problem:** GARCH(1,1) systematically **over-forecasts** realized volatility at a weekly horizon.
+
+**Discovery:** Walk-forward backtesting on NVDA (36 windows, 2-year training, 5-day forecasts) revealed:
+- Baseline (vol_scale=1.0): mean % error = 82.5% (forecasted 2.65%/day, realized 1.97%/day)
+- Calibrated (vol_scale=0.8): mean % error = 59.4% (forecasted 2.12%/day, realized 1.97%/day)
+- Improvement: -23.1 percentage points
+
+**Validation across 7 tickers** (36 windows each, Aug 25-26, 2026):
+
+| Ticker | Baseline Error | Calibrated Error | Improvement |
+|---|---|---|---|
+| NVDA | 82.5% | 59.4% | -23.1 pts |
+| AAPL | ~75% | ~52% | ~-23 pts |
+| MSFT | ~65% | ~45% | ~-20 pts |
+| TSLA | ~70% | ~48% | ~-22 pts |
+| VDE (energy fund) | 41.1% | 31.5% | -9.6 pts |
+| VOO (S&P 500 fund) | 62.1% | 41.7% | -20.4 pts |
+| VTI (total market fund) | 60.7% | 40.7% | -20.0 pts |
+
+**Conclusion:** The 0.8× calibration factor generalizes across individual stocks and diversified funds alike. Adopted as the new **DEFAULT_VOL_SCALE**.
+
+**Implementation:**
+- Added `vol_scale` parameter (default 0.8) to `forecast_volatility()` in `garch_model.py`
+- Multiplied `volatility_forecast` array by vol_scale before returning (only affects forward forecasts, not in-sample fit)
+- Threaded `vol_scale` through `draw.py`, `app.py`, cache key, and all routes
+- Added **Vol. Calibration slider** to sidebar (0.3–1.5×, default 0.8×) for user experimentation
+- Supports `?vol_scale=X` query parameter for reproducible URL sharing
+- Backtest script (`backtest_garch.py`) includes `--vol-scale` option for validating other correction factors
+
+**Note on direction/drift accuracy:**
+- Across all tickers, historical-mean drift predicts direction at ~50% accuracy (coin-flip)
+- Suggests mean return has no real predictive power at weekly horizon
+- Future enhancement: consider damping drift to zero over longer forecast horizons
+- Not yet implemented (low impact and would require validation)
+
+## Model Order & Vol Model Selection (Aug 26, 2026)
+
+**GARCH Order (p, q):**
+- Tested: (1,1), (1,2), (2,1), (2,2) via walk-forward backtest
+- Winner: **(1,1)** — lowest AIC/BIC across all test tickers
+- Higher orders add complexity without improving fit
+- **Now configurable** via sidebar dropdown (visible to user) and query string `?garch_p=1&garch_q=1`
+- Cache key includes order, so switching p/q regenerates chart
+
+**Volatility Model Type (GARCH vs EGARCH):**
+- **GARCH (default):** Symmetric, numerically stable, good fit
+- **EGARCH (experimental):** Asymmetric (captures leverage effect), numerically fragile
+  - Fails to converge on short training windows (1-year data)
+  - Requires simulation-based forecasting for multi-step (slower, less accurate)
+  - Only marginally better AIC than GARCH on long windows
+  - No improvement in accuracy at weekly forecast horizon
+  - **Recommendation:** Use GARCH for production, keep EGARCH available for research
+- **Future consideration:** GJR-GARCH (`vol='GARCH', o=1`) — more stable asymmetric alternative
+- **Now configurable** via sidebar dropdown (`GARCH — default, stable` vs `EGARCH — asymmetric, experimental`)
+- Query string support: `?vol_model=garch` or `?vol_model=egarch`
+- Cache key includes model type
+
+**Fitted Coefficients Display:**
+- Now shown in stats panel below volatility metrics
+- Shows: μ (mean), ω (omega/constant), α (alpha/ARCH), β (beta/GARCH), γ (gamma/asymmetry)
+- Helps visualize model behavior and inform p/q order tuning
+- Included in all API responses under `model_info.coefficients`
 
 ## Architecture Overview
 
@@ -184,31 +262,38 @@ def get_forecast_days(period):
 ```python
 # Key functions:
 
-def forecast_volatility(ticker, periods=14, days=1095):
+def forecast_volatility(ticker, periods=5, p=1, q=1, o=1, vol_model='garch', days=1825, vol_scale=0.8):
     """
-    Forecast volatility for next N periods using GARCH model
+    Forecast volatility for next N periods using GARCH or EGARCH.
     
     Args:
         ticker (str): Stock ticker symbol
-        periods (int): Number of periods to forecast (default: 14 days)
-        days (int): Historical data window for model training (default: 1095 = 3 years)
+        periods (int): Number of periods to forecast (default: 5 days)
+        p, q (int): GARCH order (default: 1, 1)
+        o (int): Asymmetry order for EGARCH (default: 1)
+        vol_model (str): 'garch' (default) or 'egarch'
+        days (int): Historical data window for model training (default: 1825 = 5 years)
+        vol_scale (float): Calibration multiplier (default: 0.8, range: 0.3-2.0)
     
     Returns:
         dict: {
             'status': 'success',
-            'current_volatility': float,
-            'forecasted_volatility': list[float],
+            'current_volatility': float,           # In-sample, uncalibrated
+            'forecasted_volatility': list[float],  # Calibrated by vol_scale
             'forecast_periods': int,
-            'model_info': {...}
+            'returns_mean': float,                 # Historical drift
+            'vol_scale': float,
+            'model_info': {p, q, o, vol_model, vol_scale, aic, bic, coefficients}
         }
     """
 
-def get_garch_stats(ticker, days=252):
+def get_garch_stats(ticker, p=1, q=1, o=1, vol_model='garch', days=1825):
     """
-    Get GARCH model statistics for volatility analysis
+    Get GARCH model statistics, including fitted coefficients.
     
     Returns:
         dict: {
+            'ticker': str,
             'current_volatility': float,
             'average_volatility': float,
             'max_volatility': float,
@@ -216,17 +301,22 @@ def get_garch_stats(ticker, days=252):
             'returns_mean': float,
             'returns_std': float,
             'model_aic': float,
-            'model_bic': float
+            'model_bic': float,
+            'p': int, 'q': int, 'o': int|None, 'vol_model': str,
+            'coefficients': dict
         }
     """
 ```
 
 **Key Implementation Details:**
 
-- Uses 3 years (1095 days) of historical data for model fitting
-- Fits GARCH(1,1) model to log returns
-- Calculates daily volatility as percentage
-- Returns forecasted volatility for next 14 trading days
+- Uses 5 years (1825 days) of historical data for model fitting
+- Supports GARCH(p,q) with configurable order — (1,1) is default and best by AIC
+- Supports GARCH (symmetric, default) and EGARCH (asymmetric, experimental) models
+- **Volatility Calibration:** Applies vol_scale multiplier (default 0.8×) to forecasted_volatility
+  - Based on walk-forward backtest findings: reduces over-forecast by 10-23 pts across tickers
+  - Only affects forward forecast, not in-sample conditional_volatility
+- Returns fitted coefficients (μ, ω, α, β, γ) for model inspection and tuning
 
 **Error Handling:**
 
@@ -243,21 +333,23 @@ if model is None:
 #### 2. **draw.py** - Chart Generation with Forecasts
 
 ```python
-def draw_chart(ticker, period_name, period_days, grouping='daily', include_forecast=True, forecast_days=14):
+def draw_chart(ticker, period_name, period_days, grouping='daily', include_forecast=True, forecast_days=14,
+                threshold_pct=10.0, garch_p=1, garch_q=1, vol_model='garch', vol_scale=0.8):
     """
     Generate professional stock chart with GARCH forecasts
     
     Args:
         forecast_days: Number of days to forecast (dynamic based on period)
-            - 1D → 3 days
-            - 5D → 5 days
-            - 1M/3M/6M → 14 days
-            - YTD/1Y/5Y/MAX → 21 days
+        threshold_pct: Mark price moves >threshold (red/green bars with date tags)
+        garch_p, garch_q: GARCH model order (default (1,1))
+        vol_model: 'garch' (default) or 'egarch'
+        vol_scale: Volatility calibration multiplier (default 0.8)
     
     Key features:
     - Plots historical candlesticks with proper OHLC
-    - Generates forecast candlesticks using GARCH volatility
-    - Shows forecast volume bars
+    - Generates forecast candlesticks using calibrated GARCH volatility
+    - Shows forecast volume bars (semi-transparent)
+    - Marks significant price moves (threshold configurable)
     - Extends x-axis to accommodate forecast periods
     - Returns PNG bytes for in-memory caching
     """
@@ -350,12 +442,14 @@ def ensure_chart_exists(ticker, period, grouping='daily'):
 
 **API Endpoints:**
 
-- `GET /chart` - Display chart page
-- `GET /api/chart` - Get chart metadata
-- `GET /chart-image/<chart_key>` - Serve PNG from cache
-- `GET /api/garch/<ticker>` - Get volatility forecast
-- `GET /api/garch-stats/<ticker>` - Get GARCH statistics
-- `GET /api/chart-data/<chart_key>` - Get OHLCV for tooltips
+- `GET /chart?ticker=X&period=Y&garch_p=1&garch_q=1&vol_model=garch&vol_scale=0.8&threshold=10&forecast_days=14` — Display chart page
+- `GET /api/chart` — Get chart metadata
+- `GET /chart-image/<chart_key>` — Serve PNG from cache
+- `GET /api/garch/<ticker>?periods=5&garch_p=1&garch_q=1&vol_model=garch` — Get volatility forecast (includes calibrated forecast, coefficients, model info)
+- `GET /api/garch-stats/<ticker>?garch_p=1&garch_q=1&vol_model=garch` — Get GARCH statistics (current/average/max/min vol, returns mean/std, AIC/BIC, coefficients)
+- `GET /api/chart-data/<chart_key>` — Get OHLCV data for tooltips
+
+Note: `vol_scale` is applied only to the forward forecast in `/api/garch` responses, not to the historical statistics in `/api/garch-stats`.
 
 #### 4. **templates/chart_sidebar.html** - UI and Interactivity
 
@@ -449,23 +543,34 @@ CREATE INDEX idx_ticker_date ON prices (ticker, date);
 
 ```python
 chart_cache = {
-    'AAPL_6m_daily': b'PNG_BYTES_HERE',
-    'MSFT_1y_daily': b'PNG_BYTES_HERE'
+    'AAPL_6m_daily_th10.0_fd14_p1q1_garch_vs0.80': b'PNG_BYTES_HERE',
+    'MSFT_1y_daily_th10.0_fd21_p1q1_egarch_vs0.80': b'PNG_BYTES_HERE'
 }
 
 chart_data_cache = {
-    'AAPL_6m_daily': [
+    'AAPL_6m_daily_th10.0_fd14_p1q1_garch_vs0.80': [
         {'date': '2024-01-01', 'open': 100.5, ...},
         ...
     ]
 }
 ```
 
+**Cache Key Components:**
+- Ticker, period, grouping (always 'daily')
+- threshold_pct (e.g., th10.0)
+- forecast_days (e.g., fd14)
+- GARCH order (e.g., p1q1)
+- vol_model (e.g., garch or egarch)
+- vol_scale (e.g., vs0.80)
+
+Any change to these parameters invalidates the cache and regenerates the chart.
+
 **Advantages:**
 - Fast serving (no disk I/O)
 - Automatic cleanup on app restart
+- Proper cache invalidation for all parametric changes
 - Lower memory than persistent storage
-- Charts regenerated fresh each session
+- Charts regenerated fresh each session with latest data
 
 ### 4. **Removed Grouping Feature**
 

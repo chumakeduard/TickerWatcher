@@ -9,6 +9,17 @@ from datetime import datetime
 from config import TICKERS
 from draw import draw_chart
 from garch_model import forecast_volatility, get_garch_stats
+from garch_config import (
+    VALID_GARCH_ORDERS,
+    VALID_VOL_MODELS,
+    DEFAULT_VOL_SCALE,
+    MIN_VOL_SCALE,
+    MAX_VOL_SCALE,
+    FORECAST_DAYS_BY_PERIOD,
+    DEFAULT_PRICE_MOVE_THRESHOLD,
+    MIN_PRICE_MOVE_THRESHOLD,
+    MAX_PRICE_MOVE_THRESHOLD
+)
 
 app = Flask(__name__)
 app.config['TEMPLATES_AUTO_RELOAD'] = True
@@ -61,13 +72,45 @@ def _run_refresh():
             refresh_state['error'] = str(e)
 
 
-def get_chart_key(ticker, period, grouping, threshold_pct=10.0, forecast_days=None):
+def get_chart_key(ticker, period, grouping, threshold_pct=10.0, forecast_days=None, garch_p=1, garch_q=1,
+                   vol_model='garch', vol_scale=0.8):
     """Generate cache key for chart, including parameters that affect rendering."""
     if forecast_days is None:
         forecast_days = get_forecast_days(period)
-    # Include threshold and forecast_days in the key so cache doesn't serve stale charts
-    # when only these params change
-    return f"{ticker}_{period.lower()}_{grouping}_th{threshold_pct:.1f}_fd{forecast_days}"
+    # Include threshold, forecast_days, GARCH order, vol_model, and vol_scale in the
+    # key so cache doesn't serve a stale chart when only these params change
+    return f"{ticker}_{period.lower()}_{grouping}_th{threshold_pct:.1f}_fd{forecast_days}_p{garch_p}q{garch_q}_{vol_model}_vs{vol_scale:.2f}"
+
+
+def get_garch_order(p_val, q_val):
+    """Parse and validate GARCH order (p, q) from query string. Default (1, 1)."""
+    try:
+        p = int(p_val) if p_val else 1
+        q = int(q_val) if q_val else 1
+    except (ValueError, TypeError):
+        return 1, 1
+    return (p, q) if (p, q) in VALID_GARCH_ORDERS else (1, 1)
+
+
+def get_vol_model(val):
+    """Parse and validate volatility model type from query string. Default 'garch'."""
+    if not val:
+        return 'garch'
+    val = val.lower()
+    return val if val in VALID_VOL_MODELS else 'garch'
+
+
+def get_vol_scale(val):
+    """Parse and validate volatility calibration multiplier from query string.
+
+    Default from garch_config.DEFAULT_VOL_SCALE (0.8) — backtesting found
+    GARCH(1,1) consistently over-forecasts realized volatility by ~20-25%.
+    """
+    try:
+        scale = float(val) if val else DEFAULT_VOL_SCALE
+    except (ValueError, TypeError):
+        return DEFAULT_VOL_SCALE
+    return max(MIN_VOL_SCALE, min(MAX_VOL_SCALE, scale))
 
 
 def get_chart_data_for_tooltip(ticker, period_days):
@@ -107,11 +150,15 @@ def get_chart_data_for_tooltip(ticker, period_days):
     return data
 
 
-def ensure_chart_exists(ticker, period, grouping='daily', threshold_pct=10.0, forecast_days_override=None):
+def ensure_chart_exists(ticker, period, grouping='daily', threshold_pct=10.0, forecast_days_override=None,
+                         garch_p=1, garch_q=1, vol_model='garch', vol_scale=0.8):
     """Generate and cache chart if it doesn't exist in cache.
 
     Args:
         forecast_days_override: If provided, use this instead of computing from period
+        garch_p, garch_q: GARCH model order (default (1,1))
+        vol_model: 'garch' (default) or 'egarch'
+        vol_scale: volatility calibration multiplier (default 0.8, see get_vol_scale())
     """
     # Determine the actual forecast_days to use
     forecast_days = forecast_days_override
@@ -123,14 +170,16 @@ def ensure_chart_exists(ticker, period, grouping='daily', threshold_pct=10.0, fo
         except (ValueError, TypeError):
             forecast_days = get_forecast_days(period)
 
-    cache_key = get_chart_key(ticker, period, grouping, threshold_pct=threshold_pct, forecast_days=forecast_days)
+    cache_key = get_chart_key(ticker, period, grouping, threshold_pct=threshold_pct, forecast_days=forecast_days,
+                               garch_p=garch_p, garch_q=garch_q, vol_model=vol_model, vol_scale=vol_scale)
 
     if cache_key not in chart_cache:
         try:
             period_days = get_period_days(period)
             chart_bytes = draw_chart(
                 ticker, period, period_days, grouping,
-                include_forecast=True, forecast_days=forecast_days, threshold_pct=threshold_pct
+                include_forecast=True, forecast_days=forecast_days, threshold_pct=threshold_pct,
+                garch_p=garch_p, garch_q=garch_q, vol_model=vol_model, vol_scale=vol_scale
             )
             chart_cache[cache_key] = chart_bytes
             # Also cache the data for tooltips
@@ -203,6 +252,9 @@ def chart():
     grouping = 'daily'  # Always use daily grouping
     threshold_pct = get_threshold_pct(request.args.get('threshold', '10'))
     forecast_days_override = request.args.get('forecast_days')
+    garch_p, garch_q = get_garch_order(request.args.get('garch_p'), request.args.get('garch_q'))
+    vol_model = get_vol_model(request.args.get('vol_model'))
+    vol_scale = get_vol_scale(request.args.get('vol_scale'))
 
     # Validate inputs
     if ticker not in TICKERS:
@@ -219,9 +271,10 @@ def chart():
     else:
         effective_forecast_days = get_forecast_days(period)
 
-    # Ensure chart exists in cache, passing both threshold and forecast_days overrides
+    # Ensure chart exists in cache, passing threshold, forecast_days, and GARCH model settings
     chart_key = ensure_chart_exists(ticker, period, grouping, threshold_pct=threshold_pct,
-                                   forecast_days_override=forecast_days_override)
+                                   forecast_days_override=forecast_days_override,
+                                   garch_p=garch_p, garch_q=garch_q, vol_model=vol_model, vol_scale=vol_scale)
 
     if not chart_key:
         error_msg = f"Could not generate chart for {ticker}"
@@ -235,7 +288,12 @@ def chart():
                           periods=PERIODS,
                           threshold_pct=threshold_pct,
                           forecast_days_override=forecast_days_override,
-                          effective_forecast_days=effective_forecast_days)
+                          effective_forecast_days=effective_forecast_days,
+                          garch_p=garch_p,
+                          garch_q=garch_q,
+                          vol_model=vol_model,
+                          vol_scale=vol_scale,
+                          valid_orders=VALID_GARCH_ORDERS)
 
 
 @app.route('/api/chart')
@@ -296,20 +354,31 @@ def api_garch(ticker):
         return {'error': f'Invalid ticker: {ticker}'}, 400
 
     periods = request.args.get('periods', 5, type=int)
+    garch_p, garch_q = get_garch_order(request.args.get('garch_p'), request.args.get('garch_q'))
+    vol_model = get_vol_model(request.args.get('vol_model'))
 
-    result = forecast_volatility(ticker, periods=periods)
+    result = forecast_volatility(ticker, periods=periods, p=garch_p, q=garch_q, vol_model=vol_model)
     return result
 
 
 @app.route('/api/garch-stats/<ticker>')
 def api_garch_stats(ticker):
-    """Get GARCH model statistics for a ticker."""
+    """Get GARCH model statistics for a ticker, including fitted coefficients.
+
+    Accepts optional ?garch_p=&garch_q=&vol_model= query params to match the
+    model settings the chart itself was generated with.
+    """
     ticker = ticker.upper()
 
     if ticker not in TICKERS:
         return {'error': f'Invalid ticker: {ticker}'}, 400
 
-    stats = get_garch_stats(ticker)
+    garch_p, garch_q = get_garch_order(request.args.get('garch_p'), request.args.get('garch_q'))
+    vol_model = get_vol_model(request.args.get('vol_model'))
+
+    stats = get_garch_stats(ticker, p=garch_p, q=garch_q, vol_model=vol_model)
+    # Note: get_garch_stats reports current/average/max realized volatility from the
+    # model fit itself (not a forward forecast), so vol_scale calibration doesn't apply here
 
     if stats is None:
         return {'error': f'Could not calculate GARCH stats for {ticker}'}, 500

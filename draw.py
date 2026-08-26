@@ -14,6 +14,7 @@ import matplotlib.patches as mpatches
 from matplotlib.patches import Rectangle
 import sqlite3
 from db import DB_PATH
+from garch_config import GARCH_TRAINING_DAYS
 
 
 def get_ticker_data(ticker, period_days):
@@ -72,7 +73,8 @@ def get_price_stats(opens, highs, lows, closes, volumes):
     }
 
 
-def draw_chart(ticker, period_name, period_days, grouping='daily', include_forecast=True, forecast_days=14, threshold_pct=10.0):
+def draw_chart(ticker, period_name, period_days, grouping='daily', include_forecast=True, forecast_days=14,
+                threshold_pct=10.0, garch_p=1, garch_q=1, vol_model='garch', vol_scale=0.8):
     """Generate professional stock chart image with optional GARCH forecast.
 
     Args:
@@ -82,6 +84,9 @@ def draw_chart(ticker, period_name, period_days, grouping='daily', include_forec
             - 1M/3M/6M → 14 days
             - YTD/1Y/5Y/MAX → 21 days (1 month)
         threshold_pct: Percentage threshold for marking significant price moves (default 10%)
+        garch_p, garch_q: GARCH model order (default (1,1), backtested as best AIC)
+        vol_model: 'garch' (default, stable) or 'egarch' (asymmetric, backtested as
+            numerically fragile on short windows — see backtest_garch.py notes)
     """
 
     # Fetch data
@@ -116,7 +121,8 @@ def draw_chart(ticker, period_name, period_days, grouping='daily', include_forec
             from garch_model import forecast_volatility as garch_forecast_func
             from datetime import timedelta
 
-            forecast_result = garch_forecast_func(ticker, periods=forecast_days, days=1825)  # 5 years data
+            forecast_result = garch_forecast_func(ticker, periods=forecast_days, days=GARCH_TRAINING_DAYS,
+                                                   p=garch_p, q=garch_q, vol_model=vol_model, vol_scale=vol_scale)
             if forecast_result.get('status') == 'success':
                 current_price = closes[-1]
 
