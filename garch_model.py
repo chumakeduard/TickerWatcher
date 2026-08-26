@@ -121,10 +121,10 @@ def get_garch_stats(ticker, days=252):
 
     return {
         'ticker': ticker,
-        'current_volatility': float(np.sqrt(model.conditional_volatility.values[-1])),
-        'average_volatility': float(np.sqrt(model.conditional_volatility.mean())),
-        'max_volatility': float(np.sqrt(model.conditional_volatility.max())),
-        'min_volatility': float(np.sqrt(model.conditional_volatility.min())),
+        'current_volatility': float(np.sqrt(model.conditional_volatility[-1])),
+        'average_volatility': float(np.sqrt(np.mean(model.conditional_volatility))),
+        'max_volatility': float(np.sqrt(np.max(model.conditional_volatility))),
+        'min_volatility': float(np.sqrt(np.min(model.conditional_volatility))),
         'returns_mean': float(np.mean(returns)),
         'returns_std': float(np.std(returns)),
         'model_aic': float(model.aic),
