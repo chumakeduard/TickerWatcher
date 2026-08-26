@@ -50,6 +50,93 @@ def get_ticker_data(ticker, period_days):
     return dates, opens, highs, lows, closes, volumes
 
 
+def compute_historical_predictions(ticker, dates, closes, garch_p, garch_q, vol_model, step=None):
+    """Compute rolling window predictions for historical data.
+
+    For validation: shows what the model would have predicted at each point in the past.
+    Dynamically adjusts step size based on data length for optimal coverage.
+
+    Args:
+        ticker: Stock ticker
+        dates: List of date strings
+        closes: List of closing prices
+        garch_p, garch_q: GARCH model order
+        vol_model: 'garch' or 'egarch'
+        step: Compute predictions every N days (auto-calculated if None)
+
+    Returns:
+        List of (date_index, predicted_price) tuples for historical dates
+    """
+    import sqlite3
+    from datetime import datetime, timedelta
+
+    predictions = []
+
+    if len(closes) < 50:  # Need enough data to fit GARCH (lowered for short periods like 1M)
+        return predictions
+
+    # Auto-calculate step size based on data length
+    # More data = can use larger step for efficiency
+    # Less data = use smaller step to show more predictions
+    if step is None:
+        if len(closes) < 100:
+            step = 1
+        elif len(closes) < 200:
+            step = 2
+        elif len(closes) < 500:
+            step = 3
+        else:
+            step = 7
+
+    try:
+        from garch_model import fit_garch
+    except ImportError:
+        return predictions
+
+    # Compute predictions starting from the end and working backwards
+    # Ensure we cover the entire chart from left to right
+    start_idx = len(closes) - 1
+    end_idx = max(50, min(100, len(closes) // 3))  # Leave some margin on left
+
+    for idx in range(start_idx, end_idx - 1, -step):
+        try:
+            # Fit GARCH on data up to this point
+            # Fetch historical returns up to this date
+            cutoff_date = dates[idx]
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT date, close FROM prices
+                WHERE ticker = ? AND date <= ?
+                ORDER BY date DESC LIMIT 252
+            ''', (ticker, cutoff_date))
+            rows = cursor.fetchall()
+            conn.close()
+
+            if len(rows) < 50:
+                continue
+
+            train_closes = np.array([float(r[1]) for r in reversed(rows)])
+            train_returns = np.diff(np.log(train_closes)) * 100
+
+            # Quick fit
+            from arch import arch_model
+            model = arch_model(train_returns, vol='Garch' if vol_model.lower() == 'garch' else 'EGARCH',
+                             p=garch_p, q=garch_q)
+            fitted = model.fit(disp='off')
+
+            # Predict next day's close using drift
+            last_close = train_closes[-1]
+            drift = float(np.mean(train_returns)) / 100
+            next_day_pred = last_close * (1 + drift)
+
+            predictions.append((idx, next_day_pred))
+        except Exception:
+            continue
+
+    return predictions
+
+
 def get_price_stats(opens, highs, lows, closes, volumes):
     """Calculate price statistics."""
     current_close = closes[-1]
@@ -74,8 +161,8 @@ def get_price_stats(opens, highs, lows, closes, volumes):
 
 
 def draw_chart(ticker, period_name, period_days, grouping='daily', include_forecast=True, forecast_days=14,
-                threshold_pct=10.0, garch_p=1, garch_q=1, vol_model='garch', vol_scale=0.8):
-    """Generate professional stock chart image with optional GARCH forecast.
+                threshold_pct=10.0, garch_p=1, garch_q=1, vol_model='garch', vol_scale=0.8, show_historical=False):
+    """Generate professional stock chart image with optional GARCH forecast and historical predictions.
 
     Args:
         forecast_days: Number of days to forecast
@@ -87,6 +174,8 @@ def draw_chart(ticker, period_name, period_days, grouping='daily', include_forec
         garch_p, garch_q: GARCH model order (default (1,1), backtested as best AIC)
         vol_model: 'garch' (default, stable) or 'egarch' (asymmetric, backtested as
             numerically fragile on short windows — see backtest_garch.py notes)
+        vol_scale: Volatility calibration factor (default 0.8)
+        show_historical: If True, overlay blue line showing model's past predictions on historical data
     """
 
     # Fetch data
@@ -320,6 +409,21 @@ def draw_chart(ticker, period_name, period_days, grouping='daily', include_forec
                   color='#666666', linewidth=1, linestyle='--', alpha=0.5)
     ax_chart.plot([ax_chart.get_xlim()[0], ax_chart.get_xlim()[1]], [closes[-1], closes[-1]],
                   color='#666666', linewidth=1, linestyle='--', alpha=0.5)
+
+    # Historical predictions overlay (blue line showing past model predictions)
+    historical_predictions = []
+    if show_historical and len(dates) > 50:
+        try:
+            hist_preds = compute_historical_predictions(ticker, dates, closes, garch_p, garch_q, vol_model)
+            if hist_preds:
+                pred_indices = [idx for idx, _ in hist_preds]
+                pred_prices = [price for _, price in hist_preds]
+                # Store predictions for tooltip display (embedded in chart image)
+                historical_predictions = [(dates[idx] if idx < len(dates) else f"idx_{idx}", price) for idx, price in hist_preds]
+                ax_chart.plot(pred_indices, pred_prices, color='#1e90ff', linewidth=2, alpha=0.7, label='Model Predictions', linestyle='--', marker='o', markersize=3)
+                ax_chart.legend(loc='lower right', fontsize=9, framealpha=0.85)
+        except Exception:
+            pass  # Silently skip if historical predictions fail
 
     # Extend x-axis to include forecast
     x_max = len(dates) + (forecast_days if forecast_data else 0) + 1

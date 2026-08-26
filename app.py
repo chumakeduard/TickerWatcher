@@ -73,13 +73,14 @@ def _run_refresh():
 
 
 def get_chart_key(ticker, period, grouping, threshold_pct=10.0, forecast_days=None, garch_p=1, garch_q=1,
-                   vol_model='garch', vol_scale=0.8):
+                   vol_model='garch', vol_scale=0.8, show_historical=False):
     """Generate cache key for chart, including parameters that affect rendering."""
     if forecast_days is None:
         forecast_days = get_forecast_days(period)
-    # Include threshold, forecast_days, GARCH order, vol_model, and vol_scale in the
-    # key so cache doesn't serve a stale chart when only these params change
-    return f"{ticker}_{period.lower()}_{grouping}_th{threshold_pct:.1f}_fd{forecast_days}_p{garch_p}q{garch_q}_{vol_model}_vs{vol_scale:.2f}"
+    # Include threshold, forecast_days, GARCH order, vol_model, vol_scale, and show_historical
+    # in the key so cache doesn't serve a stale chart when only these params change
+    hist_suffix = "_hist" if show_historical else ""
+    return f"{ticker}_{period.lower()}_{grouping}_th{threshold_pct:.1f}_fd{forecast_days}_p{garch_p}q{garch_q}_{vol_model}_vs{vol_scale:.2f}{hist_suffix}"
 
 
 def get_garch_order(p_val, q_val):
@@ -151,7 +152,7 @@ def get_chart_data_for_tooltip(ticker, period_days):
 
 
 def ensure_chart_exists(ticker, period, grouping='daily', threshold_pct=10.0, forecast_days_override=None,
-                         garch_p=1, garch_q=1, vol_model='garch', vol_scale=0.8):
+                         garch_p=1, garch_q=1, vol_model='garch', vol_scale=0.8, show_historical=False):
     """Generate and cache chart if it doesn't exist in cache.
 
     Args:
@@ -159,6 +160,7 @@ def ensure_chart_exists(ticker, period, grouping='daily', threshold_pct=10.0, fo
         garch_p, garch_q: GARCH model order (default (1,1))
         vol_model: 'garch' (default) or 'egarch'
         vol_scale: volatility calibration multiplier (default 0.8, see get_vol_scale())
+        show_historical: If True, overlay historical predictions on the chart
     """
     # Determine the actual forecast_days to use
     forecast_days = forecast_days_override
@@ -171,7 +173,8 @@ def ensure_chart_exists(ticker, period, grouping='daily', threshold_pct=10.0, fo
             forecast_days = get_forecast_days(period)
 
     cache_key = get_chart_key(ticker, period, grouping, threshold_pct=threshold_pct, forecast_days=forecast_days,
-                               garch_p=garch_p, garch_q=garch_q, vol_model=vol_model, vol_scale=vol_scale)
+                               garch_p=garch_p, garch_q=garch_q, vol_model=vol_model, vol_scale=vol_scale,
+                               show_historical=show_historical)
 
     if cache_key not in chart_cache:
         try:
@@ -179,7 +182,8 @@ def ensure_chart_exists(ticker, period, grouping='daily', threshold_pct=10.0, fo
             chart_bytes = draw_chart(
                 ticker, period, period_days, grouping,
                 include_forecast=True, forecast_days=forecast_days, threshold_pct=threshold_pct,
-                garch_p=garch_p, garch_q=garch_q, vol_model=vol_model, vol_scale=vol_scale
+                garch_p=garch_p, garch_q=garch_q, vol_model=vol_model, vol_scale=vol_scale,
+                show_historical=show_historical
             )
             chart_cache[cache_key] = chart_bytes
             # Also cache the data for tooltips
@@ -255,6 +259,7 @@ def chart():
     garch_p, garch_q = get_garch_order(request.args.get('garch_p'), request.args.get('garch_q'))
     vol_model = get_vol_model(request.args.get('vol_model'))
     vol_scale = get_vol_scale(request.args.get('vol_scale'))
+    show_historical = request.args.get('show_historical', '0') == '1'
 
     # Validate inputs
     if ticker not in TICKERS:
@@ -274,7 +279,8 @@ def chart():
     # Ensure chart exists in cache, passing threshold, forecast_days, and GARCH model settings
     chart_key = ensure_chart_exists(ticker, period, grouping, threshold_pct=threshold_pct,
                                    forecast_days_override=forecast_days_override,
-                                   garch_p=garch_p, garch_q=garch_q, vol_model=vol_model, vol_scale=vol_scale)
+                                   garch_p=garch_p, garch_q=garch_q, vol_model=vol_model, vol_scale=vol_scale,
+                                   show_historical=show_historical)
 
     if not chart_key:
         error_msg = f"Could not generate chart for {ticker}"
@@ -293,6 +299,7 @@ def chart():
                           garch_q=garch_q,
                           vol_model=vol_model,
                           vol_scale=vol_scale,
+                          show_historical=show_historical,
                           valid_orders=VALID_GARCH_ORDERS)
 
 

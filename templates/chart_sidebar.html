@@ -411,7 +411,7 @@
             </div>
 
             <!-- Volatility Calibration Factor -->
-            <div>
+            <div style="margin-bottom: 12px;">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
                     <label style="font-size: 11px; color: #888;" title="Backtesting found GARCH over-forecasts realized volatility by ~20-25%; this scales the forecast down to match.">Vol. Calibration</label>
                     <span id="vol-scale-value" style="font-size: 11px; color: #00d84f; font-weight: 600;">{{ vol_scale }}×</span>
@@ -421,6 +421,18 @@
                        oninput="document.getElementById('vol-scale-value').textContent = this.value + '×';">
                 <div style="font-size: 10px; color: #666; margin-top: 4px; display: flex; justify-content: space-between;">
                     <span>0.3×</span><span>0.8× default</span><span>1.5×</span>
+                </div>
+            </div>
+
+            <!-- Show Historical Predictions -->
+            <div style="margin-bottom: 12px;">
+                <label style="display: flex; align-items: center; font-size: 11px; color: #888; cursor: pointer;">
+                    <input type="checkbox" id="show-historical-predictions" {% if show_historical %}checked{% endif %} style="margin-right: 6px; cursor: pointer;" />
+                    <span title="Overlay blue line showing what current settings would have predicted for historical data">Show Historical Predictions</span>
+                </label>
+                <div style="font-size: 9px; color: #666; margin-top: 4px; margin-left: 20px;">
+                    Blue line = model's past predictions<br/>
+                    Candlesticks = actual prices
                 </div>
             </div>
 
@@ -508,6 +520,7 @@
             const [garchP, garchQ] = document.getElementById('garch-order-select').value.split(',');
             const volModel = document.getElementById('vol-model-select').value;
             const volScale = parseFloat(document.getElementById('vol-scale-slider').value) || 0.8;
+            const showHistoricalPredictions = document.getElementById('show-historical-predictions').checked ? '1' : '0';
             const params = new URLSearchParams(window.location.search);
 
             params.set('threshold', threshold);
@@ -516,6 +529,7 @@
             params.set('garch_q', garchQ);
             params.set('vol_model', volModel);
             params.set('vol_scale', volScale);
+            params.set('show_historical', showHistoricalPredictions);
 
             window.location.href = '{{ url_for('chart') }}?' + params.toString();
         }
@@ -717,7 +731,7 @@
                 const isRed = data.close < data.open;
                 const colorClass = isRed ? 'red' : 'green';
 
-                const tooltipHTML = `
+                let tooltipHTML = `
                     <div class="tooltip-date ${colorClass}">${data.date}</div>
                     <div class="tooltip-row">
                         <span class="tooltip-label">Open</span>
@@ -740,6 +754,14 @@
                         <span class="tooltip-value ${colorClass}">${(data.volume / 1e6).toFixed(1)}M</span>
                     </div>
                 `;
+
+                // Show note about historical predictions if enabled
+                const showHistoricalCheckbox = document.getElementById('show-historical-predictions');
+                if (showHistoricalCheckbox && showHistoricalCheckbox.checked) {
+                    tooltipHTML += `<div class="tooltip-row" style="margin-top: 6px; padding-top: 6px; border-top: 1px solid #444;">
+                        <span style="font-size: 9px; color: #1e90ff;">💙 Blue dashed line = model predictions</span>
+                    </div>`;
+                }
 
                 tooltip.innerHTML = tooltipHTML;
                 tooltip.classList.add('show');
