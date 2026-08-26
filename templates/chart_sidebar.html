@@ -365,11 +365,19 @@
         <div class="sidebar-section" style="background-color: #1a2838; padding: 12px; border-radius: 4px; border: 1px solid #2a3f5a;">
             <div class="sidebar-title">⚙️ Chart Controls</div>
 
-            <!-- Threshold Input -->
+            <!-- Threshold Slider -->
             <div style="margin-bottom: 12px;">
-                <label style="font-size: 11px; color: #888; display: block; margin-bottom: 4px;">Price Move Threshold (%)</label>
-                <input type="number" id="threshold-input" value="{{ threshold_pct }}" min="0.1" max="100" step="0.5"
-                       style="width: 100%; padding: 6px; background-color: #0a0e27; border: 1px solid #2a3f5a; color: #00d84f; border-radius: 3px; box-sizing: border-box;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                    <label style="font-size: 11px; color: #888;">Price Move Threshold</label>
+                    <span id="threshold-value" style="font-size: 11px; color: #00d84f; font-weight: 600;">{{ threshold_pct }}%</span>
+                </div>
+                <input type="range" id="threshold-slider" value="{{ threshold_pct }}" min="3" max="25" step="0.5"
+                       style="width: 100%; cursor: pointer; accent-color: #00d84f;"
+                       oninput="document.getElementById('threshold-value').textContent = this.value + '%';"
+                       onchange="updateThresholdChart()">
+                <div style="font-size: 10px; color: #666; margin-top: 4px; display: flex; justify-content: space-between;">
+                    <span>3%</span><span>25%</span>
+                </div>
             </div>
 
             <!-- Forecast Days Input -->
@@ -381,7 +389,7 @@
 
             <button onclick="applyChartControls()"
                     style="width: 100%; margin-top: 8px; padding: 6px; background-color: #00d84f; color: #000; border: none; border-radius: 3px; font-weight: 600; cursor: pointer;">
-                Apply
+                Apply Forecast Days
             </button>
         </div>
 
@@ -390,7 +398,7 @@
             <div class="sidebar-title">📊 Tickers</div>
             <div class="ticker-list">
                 {% for t in tickers %}
-                <a href="{{ url_for('chart', ticker=t, period=period) }}" class="ticker-item {% if t == ticker %}active{% endif %}">
+                <a href="{{ url_for('chart', ticker=t, period=period, threshold=threshold_pct, forecast_days=effective_forecast_days) }}" class="ticker-item {% if t == ticker %}active{% endif %}">
                     {{ t }}
                 </a>
                 {% endfor %}
@@ -402,7 +410,7 @@
             <div class="sidebar-title">📅 Time Period</div>
             <div class="button-group">
                 {% for p in periods %}
-                <button class="selector-btn {% if p == period %}active{% endif %}" onclick="window.location.href = '{{ url_for('chart', ticker=ticker, period=p) }}'">{{ p }}</button>
+                <button class="selector-btn {% if p == period %}active{% endif %}" onclick="window.location.href = '{{ url_for('chart', ticker=ticker, period=p, threshold=threshold_pct, forecast_days=effective_forecast_days) }}'">{{ p }}</button>
                 {% endfor %}
             </div>
         </div>
@@ -441,10 +449,25 @@
     </div>
 
     <script>
-        // Apply chart control changes (threshold and forecast days)
+        // Update threshold chart in real-time when slider moves
+        function updateThresholdChart() {
+            const slider = document.getElementById('threshold-slider');
+            const valueDisplay = document.getElementById('threshold-value');
+            const threshold = parseFloat(slider.value);
+
+            // Update display value
+            valueDisplay.textContent = threshold + '%';
+
+            // Navigate to new URL with updated threshold (chart regenerates automatically)
+            const params = new URLSearchParams(window.location.search);
+            params.set('threshold', threshold);
+            window.location.href = '{{ url_for('chart') }}?' + params.toString();
+        }
+
+        // Apply chart control changes (forecast days only, threshold uses slider)
         function applyChartControls() {
-            const threshold = parseFloat(document.getElementById('threshold-input').value) || 10;
             const forecastDays = parseInt(document.getElementById('forecast-input').value) || 14;
+            const threshold = parseFloat(document.getElementById('threshold-slider').value) || 10;
             const params = new URLSearchParams(window.location.search);
 
             params.set('threshold', threshold);
@@ -453,10 +476,7 @@
             window.location.href = '{{ url_for('chart') }}?' + params.toString();
         }
 
-        // Allow Enter key to apply controls
-        document.getElementById('threshold-input').addEventListener('keypress', function(e) {
-            if (e.key === 'Enter') applyChartControls();
-        });
+        // Allow Enter key to apply forecast days
         document.getElementById('forecast-input').addEventListener('keypress', function(e) {
             if (e.key === 'Enter') applyChartControls();
         });

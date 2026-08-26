@@ -1,0 +1,17 @@
+{
+  "permission_mode": "permissive",
+  "git": {
+    "auto_commit": false
+  },
+  "browser": {
+    "allow_localhost": true
+  },
+  "network": {
+    "allow_hosts": [
+      "localhost",
+      "127.0.0.1",
+      "localhost:8080",
+      "127.0.0.1:8080"
+    ]
+  }
+}

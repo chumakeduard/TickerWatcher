@@ -19,6 +19,13 @@ August 26, 2026
 - Intelligent prediction scaling (short periods = short forecasts)
 - Forecasts use per-day GARCH volatility term structure + historical drift (fixed Aug 26, 2026 — see "Forecast Logic Bug Fix" below)
 - One-click data refresh button in sidebar (fixed Aug 26, 2026)
+- **Threshold and Forecast-Days Control Panel** (Aug 26, 2026)
+  - Adjustable price-move threshold (default 10%, range 0.1-100%) to mark significant drops/rises
+  - Adjustable forecast period length (1-60 days, default based on chart period)
+  - Vertical lines with date tags mark moves exceeding threshold (red for drops, green for rises)
+  - Marks both historical AND forecast/prediction portions of chart
+  - Both parameters settable via URL query string for bookmarkable configurations
+  - Cache properly invalidated when only threshold/forecast-days changes
 
 ## Forecast Logic Bug Fix (Aug 26, 2026)
 
@@ -83,6 +90,61 @@ A "🔄 Refresh Data" button is pinned to the bottom of the sidebar (below the G
 - On page load, also checks `/api/refresh/status` once — if a refresh was already running (started from another tab), immediately resumes polling instead of missing it.
 
 **Note:** this reuses `refresh.update_ticker()` from `refresh.py` directly (same incremental-fetch + backfill logic as the CLI script), so behavior is identical to running `python refresh.py` manually.
+
+## Threshold and Forecast-Days Control Panel (Aug 26, 2026)
+
+A new "⚙️ Chart Controls" section at the top of the sidebar allows real-time adjustment of chart visualization parameters.
+
+**UI Controls (`templates/chart_sidebar.html`):**
+- **Price Move Threshold (%)** — number input (default 10, range 0.1-100)
+  - Marks all historical and forecast days where price moved ≥ threshold amount
+  - User can adjust on-the-fly; clicking "Apply" navigates to URL with new parameters
+  - Enter key also applies changes
+- **Forecast Days** — number input (default 14, range 1-60)
+  - Overrides the `get_forecast_days(period)` default for the selected chart period
+  - Example: can request 30-day forecast on a 6M chart instead of the default 14
+  - Enter key also applies changes
+
+**Backend (`app.py`):**
+- `get_threshold_pct(query_val)` — parses threshold from URL, validates range, returns float (default 10.0)
+- `get_chart_key(ticker, period, grouping, threshold_pct, forecast_days)` — **updated to include both threshold and forecast_days in cache key**
+  - Prevents stale cache hits when only these parameters change
+  - Cache key format: `{ticker}_{period}_{grouping}_th{threshold:.1f}_fd{forecast_days}`
+- `ensure_chart_exists(..., forecast_days_override)` — accepts and passes override to `draw_chart()`
+- `/chart` route now:
+  1. Extracts `threshold` and `forecast_days` from query string
+  2. Validates `threshold_pct` via `get_threshold_pct()`
+  3. Calculates `effective_forecast_days` (override if provided, else period-based default)
+  4. Passes both to `ensure_chart_exists()`
+  5. Passes `effective_forecast_days` to template for use in navigation links
+
+**Chart Generation (`draw.py`):**
+- `draw_chart(..., threshold_pct=10.0, forecast_days=14)` — accepts both parameters
+- **Significant-move detection:**
+  - Scans historical data for any day where `|pct_change| >= threshold_pct` (compared to previous close)
+  - **NEW:** Also scans forecast data — chains from last historical close through all forecast closes
+  - Records index, date, pct_change, and is_drop (True if negative) for each qualifying move
+- **Significant-move rendering (moved AFTER `set_ylim()` for correct positioning):**
+  - Draws vertical line at each qualifying move: red for drops, green for rises
+  - Adds date + pct_change label with colored bbox
+  - Label y-position calculated using **finalized** y-axis limits (not stale auto-scaled bounds)
+
+**URL Query String Support:**
+```
+/chart?ticker=AAPL&period=6M&threshold=5&forecast_days=30
+```
+Both `threshold` and `forecast_days` are optional; defaults apply if omitted.
+
+**Navigation Link Propagation:**
+- Ticker selector links now carry forward current `threshold` and `effective_forecast_days` in URL
+- Period selector buttons now carry forward current `threshold` and `effective_forecast_days` in URL
+- Result: changing ticker or period preserves the user's custom settings
+
+**Verified Behavior:**
+- ✅ Cache invalidation: threshold=5 and threshold=10 generate different charts (different markers)
+- ✅ Forecast-days override: forecast_days=30 shows 30 candlesticks vs default 14
+- ✅ Parameter persistence: ticker/period links preserve threshold and forecast_days settings
+- ✅ Forecast portion marked: significant moves in forecast section now have vertical lines and labels
 
 ## Dynamic Forecast Periods Feature
 

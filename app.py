@@ -61,9 +61,13 @@ def _run_refresh():
             refresh_state['error'] = str(e)
 
 
-def get_chart_key(ticker, period, grouping):
-    """Generate cache key for chart."""
-    return f"{ticker}_{period.lower()}_{grouping}"
+def get_chart_key(ticker, period, grouping, threshold_pct=10.0, forecast_days=None):
+    """Generate cache key for chart, including parameters that affect rendering."""
+    if forecast_days is None:
+        forecast_days = get_forecast_days(period)
+    # Include threshold and forecast_days in the key so cache doesn't serve stale charts
+    # when only these params change
+    return f"{ticker}_{period.lower()}_{grouping}_th{threshold_pct:.1f}_fd{forecast_days}"
 
 
 def get_chart_data_for_tooltip(ticker, period_days):
@@ -103,14 +107,27 @@ def get_chart_data_for_tooltip(ticker, period_days):
     return data
 
 
-def ensure_chart_exists(ticker, period, grouping='daily', threshold_pct=10.0):
-    """Generate and cache chart if it doesn't exist in cache."""
-    cache_key = get_chart_key(ticker, period, grouping)
+def ensure_chart_exists(ticker, period, grouping='daily', threshold_pct=10.0, forecast_days_override=None):
+    """Generate and cache chart if it doesn't exist in cache.
+
+    Args:
+        forecast_days_override: If provided, use this instead of computing from period
+    """
+    # Determine the actual forecast_days to use
+    forecast_days = forecast_days_override
+    if forecast_days is None:
+        forecast_days = get_forecast_days(period)
+    else:
+        try:
+            forecast_days = int(forecast_days_override)
+        except (ValueError, TypeError):
+            forecast_days = get_forecast_days(period)
+
+    cache_key = get_chart_key(ticker, period, grouping, threshold_pct=threshold_pct, forecast_days=forecast_days)
 
     if cache_key not in chart_cache:
         try:
             period_days = get_period_days(period)
-            forecast_days = get_forecast_days(period)
             chart_bytes = draw_chart(
                 ticker, period, period_days, grouping,
                 include_forecast=True, forecast_days=forecast_days, threshold_pct=threshold_pct
@@ -193,8 +210,18 @@ def chart():
     if period not in PERIODS:
         period = '6M'
 
-    # Ensure chart exists in cache
-    chart_key = ensure_chart_exists(ticker, period, grouping, threshold_pct=threshold_pct)
+    # Calculate the effective forecast_days that will be used
+    if forecast_days_override:
+        try:
+            effective_forecast_days = int(forecast_days_override)
+        except (ValueError, TypeError):
+            effective_forecast_days = get_forecast_days(period)
+    else:
+        effective_forecast_days = get_forecast_days(period)
+
+    # Ensure chart exists in cache, passing both threshold and forecast_days overrides
+    chart_key = ensure_chart_exists(ticker, period, grouping, threshold_pct=threshold_pct,
+                                   forecast_days_override=forecast_days_override)
 
     if not chart_key:
         error_msg = f"Could not generate chart for {ticker}"
@@ -207,7 +234,8 @@ def chart():
                           tickers=TICKERS,
                           periods=PERIODS,
                           threshold_pct=threshold_pct,
-                          forecast_days_override=forecast_days_override)
+                          forecast_days_override=forecast_days_override,
+                          effective_forecast_days=effective_forecast_days)
 
 
 @app.route('/api/chart')
@@ -216,6 +244,8 @@ def api_chart():
     ticker = request.args.get('ticker', TICKERS[0]).upper()
     period = request.args.get('period', '6M')
     grouping = request.args.get('grouping', 'daily')
+    threshold_pct = get_threshold_pct(request.args.get('threshold', '10'))
+    forecast_days_override = request.args.get('forecast_days')
 
     # Validate inputs
     if ticker not in TICKERS:
@@ -226,7 +256,8 @@ def api_chart():
         return {'error': f'Invalid grouping: {grouping}'}, 400
 
     # Ensure chart exists in cache
-    chart_key = ensure_chart_exists(ticker, period, grouping)
+    chart_key = ensure_chart_exists(ticker, period, grouping, threshold_pct=threshold_pct,
+                                   forecast_days_override=forecast_days_override)
 
     if not chart_key:
         return {'error': f'Could not generate chart for {ticker}'}, 500
@@ -236,7 +267,9 @@ def api_chart():
         'period': period,
         'grouping': grouping,
         'chart_key': chart_key,
-        'chart_url': f'/chart-image/{chart_key}'
+        'chart_url': f'/chart-image/{chart_key}',
+        'threshold_pct': threshold_pct,
+        'forecast_days': forecast_days_override or get_forecast_days(period)
     }
 
 

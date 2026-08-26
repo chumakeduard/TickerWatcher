@@ -116,7 +116,7 @@ def draw_chart(ticker, period_name, period_days, grouping='daily', include_forec
             from garch_model import forecast_volatility as garch_forecast_func
             from datetime import timedelta
 
-            forecast_result = garch_forecast_func(ticker, periods=forecast_days, days=1095)  # 3 years data
+            forecast_result = garch_forecast_func(ticker, periods=forecast_days, days=1825)  # 5 years data
             if forecast_result.get('status') == 'success':
                 current_price = closes[-1]
 
@@ -141,12 +141,24 @@ def draw_chart(ticker, period_name, period_days, grouping='daily', include_forec
                 # Generate forecast: random walk with GARCH-forecasted, day-specific volatility + drift
                 last_date = datetime.strptime(dates[-1], '%Y-%m-%d').date()
 
+                # Seed the RNG deterministically from (ticker, last_date) only — NOT from
+                # forecast_days/threshold. This makes the random draw sequence identical
+                # regardless of how many days are requested, so a 51-day forecast is the
+                # same 50-day forecast plus one more step, instead of an unrelated redraw.
+                # (Previously np.random was left unseeded here, so changing forecast_days
+                # by even 1 reshuffled the entire path and made adjacent-day forecasts look
+                # completely unrelated to each other.)
+                import hashlib
+                seed_str = f"{ticker}_{last_date.isoformat()}"
+                seed = int(hashlib.md5(seed_str.encode()).hexdigest(), 16) % (2**32)
+                rng = np.random.RandomState(seed)
+
                 for i in range(forecast_days):
                     forecast_date = last_date + timedelta(days=i+1)
                     day_vol = per_day_vol[i] if i < len(per_day_vol) else per_day_vol[-1]
 
                     drift_component = current_price * drift
-                    shock_component = np.random.normal(0, day_vol * current_price)
+                    shock_component = rng.normal(0, day_vol * current_price)
                     price_change = drift_component + shock_component
                     current_price = max(current_price + price_change, 0.01)
 
@@ -243,6 +255,15 @@ def draw_chart(ticker, period_name, period_days, grouping='daily', include_forec
         forecast_dates = forecast_data['dates']
         forecast_vols = forecast_data.get('volatility', [])
 
+        # Use the same deterministic per-(ticker, last_date) seeded RNG as the price-path
+        # generation above, so OHLC wick sizes also stay identical across forecast_days
+        # changes instead of reshuffling every candle each time the horizon is adjusted.
+        import hashlib
+        last_date_for_seed = datetime.strptime(dates[-1], '%Y-%m-%d').date()
+        seed_str = f"{ticker}_{last_date_for_seed.isoformat()}_ohlc"
+        ohlc_seed = int(hashlib.md5(seed_str.encode()).hexdigest(), 16) % (2**32)
+        ohlc_rng = np.random.RandomState(ohlc_seed)
+
         # Generate realistic OHLC for forecasts using GARCH volatility
         for idx, close_price in enumerate(forecast_closes):
             i = len(dates) + idx + 1  # Position after historical data
@@ -253,9 +274,9 @@ def draw_chart(ticker, period_name, period_days, grouping='daily', include_forec
             daily_vol = day_vol * close_price
 
             # Generate simple OHLC with random walk
-            o = close_price + np.random.normal(0, daily_vol * 0.3)
-            h = max(close_price, o) + abs(np.random.normal(0, daily_vol * 0.5))
-            l = min(close_price, o) - abs(np.random.normal(0, daily_vol * 0.5))
+            o = close_price + ohlc_rng.normal(0, daily_vol * 0.3)
+            h = max(close_price, o) + abs(ohlc_rng.normal(0, daily_vol * 0.5))
+            l = min(close_price, o) - abs(ohlc_rng.normal(0, daily_vol * 0.5))
             c = close_price
 
             # Ensure realistic values
@@ -287,18 +308,6 @@ def draw_chart(ticker, period_name, period_days, grouping='daily', include_forec
                   transform=ax_chart.transAxes, va='top',
                   bbox=dict(boxstyle='round,pad=0.5', facecolor='#222222', edgecolor='#444444', alpha=0.8))
 
-    # Mark significant price moves (drops/rises > threshold) with vertical lines and labels
-    for move in significant_moves:
-        line_color = '#ff3333' if move['is_drop'] else '#00d84f'  # Red for drop, green for rise
-        ax_chart.axvline(x=move['index'], color=line_color, linewidth=1.5, alpha=0.6, linestyle='-')
-
-        # Add date label above/below the line
-        label_text = f"{move['date']}\n{move['pct_change']:+.1f}%"
-        y_pos = ax_chart.get_ylim()[1] * 0.95 if move['is_drop'] else ax_chart.get_ylim()[1] * 0.92
-        ax_chart.text(move['index'], y_pos, label_text, fontsize=8, color=line_color,
-                      ha='center', va='top',
-                      bbox=dict(boxstyle='round,pad=0.3', facecolor='#1a1a1a', edgecolor=line_color, alpha=0.8))
-
     # Crosshair on last candle
     last_i = len(dates) - 1
     ax_chart.plot([last_i, last_i], [ax_chart.get_ylim()[0], ax_chart.get_ylim()[1]],
@@ -322,6 +331,45 @@ def draw_chart(ticker, period_name, period_days, grouping='daily', include_forec
     ax_chart.spines['left'].set_color('#333333')
     ax_chart.spines['bottom'].set_color('#333333')
 
+    # Now that y-axis limits are finalized, identify and mark significant moves in the FORECAST portion
+    # (in addition to the historical significant_moves already identified earlier)
+    if forecast_data and 'closes' in forecast_data:
+        forecast_closes = forecast_data['closes']
+        forecast_dates = forecast_data['dates']
+
+        # Chain from the last historical close
+        prev_close_for_forecast = closes[-1]
+
+        for idx, close_price in enumerate(forecast_closes):
+            pct_change = ((close_price - prev_close_for_forecast) / prev_close_for_forecast * 100) if prev_close_for_forecast != 0 else 0
+
+            if abs(pct_change) >= threshold_pct:
+                is_drop = pct_change < 0
+                # Index is len(dates) + idx + 1 (to account for the position after historical data)
+                x_index = len(dates) + idx + 1
+                significant_moves.append({
+                    'index': x_index,
+                    'date': forecast_dates[idx],
+                    'pct_change': pct_change,
+                    'is_drop': is_drop
+                })
+
+            prev_close_for_forecast = close_price
+
+    # Mark significant price moves (drops/rises > threshold) with vertical lines and labels
+    # This is done AFTER set_ylim() so y_pos calculations use the correct, final axis limits
+    y_min, y_max = ax_chart.get_ylim()
+    for move in significant_moves:
+        line_color = '#ff3333' if move['is_drop'] else '#00d84f'  # Red for drop, green for rise
+        ax_chart.axvline(x=move['index'], color=line_color, linewidth=1.5, alpha=0.6, linestyle='-')
+
+        # Add date label above/below the line, using the finalized y-axis range
+        label_text = f"{move['date']}\n{move['pct_change']:+.1f}%"
+        y_pos = y_max * 0.95 if move['is_drop'] else y_max * 0.92
+        ax_chart.text(move['index'], y_pos, label_text, fontsize=8, color=line_color,
+                      ha='center', va='top',
+                      bbox=dict(boxstyle='round,pad=0.3', facecolor='#1a1a1a', edgecolor=line_color, alpha=0.8))
+
     # ===== VOLUME CHART =====
     ax_volume.set_facecolor('#1a1a1a')
     ax_volume.grid(True, color='#333333', linestyle='-', linewidth=0.3, alpha=0.3)
@@ -332,10 +380,17 @@ def draw_chart(ticker, period_name, period_days, grouping='daily', include_forec
     # Plot forecasted volume (estimated based on average historical volume)
     if forecast_data and len(forecast_data.get('closes', [])) > 0:
         avg_volume = np.mean(volumes)
+        # Same deterministic per-(ticker, last_date) seeding as the price path/OHLC above,
+        # so forecast volume bars also stay consistent when only forecast_days changes.
+        import hashlib
+        last_date_for_seed = datetime.strptime(dates[-1], '%Y-%m-%d').date()
+        seed_str = f"{ticker}_{last_date_for_seed.isoformat()}_volume"
+        vol_seed = int(hashlib.md5(seed_str.encode()).hexdigest(), 16) % (2**32)
+        vol_rng = np.random.RandomState(vol_seed)
         for idx in range(len(forecast_data['closes'])):
             i = len(dates) + idx + 1
             # Generate forecast volume with some variation
-            forecast_vol = avg_volume * np.random.uniform(0.8, 1.2)
+            forecast_vol = avg_volume * vol_rng.uniform(0.8, 1.2)
             # Alternate colors for forecast volume (lighter shades)
             color_forecast = '#66ff99' if idx % 2 == 0 else '#ff7777'
             ax_volume.bar(i, forecast_vol, color=color_forecast, alpha=0.3, width=0.8)
