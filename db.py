@@ -8,7 +8,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 DB_PATH = Path(__file__).parent / "prices.db"
-MIN_YEARS = 10
+MIN_YEARS = 50
 
 
 def init_db():

@@ -252,7 +252,7 @@
             <!-- Grouping Selector -->
             <div class="control-group">
                 <label>Chart Grouping</label>
-                <select onchange="window.location.href = '{{ url_for('chart', ticker=ticker, period=period) }}' + '&grouping=' + this.value">
+                <select id="grouping-select" onchange="changeGrouping()" oninput="changeGrouping()">
                     {% for g in groupings %}
                     <option value="{{ g }}" {% if g == grouping %}selected{% endif %}>{{ g | capitalize }}</option>
                     {% endfor %}
@@ -274,6 +274,15 @@
     </div>
 
     <script>
+        // Handle grouping dropdown change
+        function changeGrouping() {
+            const groupingSelect = document.getElementById('grouping-select');
+            const grouping = groupingSelect.value;
+            const ticker = new URLSearchParams(window.location.search).get('ticker') || '{{ ticker }}';
+            const period = new URLSearchParams(window.location.search).get('period') || '{{ period }}';
+            window.location.href = '{{ url_for('chart') }}?ticker=' + ticker + '&period=' + period + '&grouping=' + grouping;
+        }
+
         // Highlight active ticker based on URL
         document.addEventListener('DOMContentLoaded', function() {
             // Check if page was loaded with new parameters
@@ -285,6 +294,25 @@
             // Update URL if parameters were changed
             if (ticker !== '{{ ticker }}' || period !== '{{ period }}' || grouping !== '{{ grouping }}') {
                 window.location.href = '{{ url_for('chart') }}?ticker=' + ticker + '&period=' + period + '&grouping=' + grouping;
+            }
+
+            // Setup change listener for grouping select
+            // Use polling to detect changes since native events don't always fire
+            const groupingSelect = document.getElementById('grouping-select');
+            if (groupingSelect) {
+                let lastValue = groupingSelect.value;
+
+                // Monitor for value changes (polling method as fallback)
+                setInterval(function() {
+                    if (groupingSelect.value !== lastValue) {
+                        lastValue = groupingSelect.value;
+                        changeGrouping();
+                    }
+                }, 100);
+
+                // Also listen to change event
+                groupingSelect.addEventListener('change', changeGrouping);
+                groupingSelect.addEventListener('input', changeGrouping);
             }
         });
     </script>
