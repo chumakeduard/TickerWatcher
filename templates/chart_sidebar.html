@@ -366,7 +366,7 @@
             <div class="sidebar-title">📊 Tickers</div>
             <div class="ticker-list">
                 {% for t in tickers %}
-                <a href="{{ url_for('chart', ticker=t, period=period, grouping=grouping) }}" class="ticker-item {% if t == ticker %}active{% endif %}">
+                <a href="{{ url_for('chart', ticker=t, period=period) }}" class="ticker-item {% if t == ticker %}active{% endif %}">
                     {{ t }}
                 </a>
                 {% endfor %}
@@ -378,17 +378,7 @@
             <div class="sidebar-title">📅 Time Period</div>
             <div class="button-group">
                 {% for p in periods %}
-                <button class="selector-btn {% if p == period %}active{% endif %}" onclick="window.location.href = '{{ url_for('chart', ticker=ticker, period=p, grouping=grouping) }}'">{{ p }}</button>
-                {% endfor %}
-            </div>
-        </div>
-
-        <!-- Chart Grouping -->
-        <div class="sidebar-section">
-            <div class="sidebar-title">📈 Grouping</div>
-            <div class="button-group">
-                {% for g in groupings %}
-                <button class="selector-btn {% if g == grouping %}active{% endif %}" onclick="selectGrouping('{{ g }}')">{{ g | capitalize }}</button>
+                <button class="selector-btn {% if p == period %}active{% endif %}" onclick="window.location.href = '{{ url_for('chart', ticker=ticker, period=p) }}'">{{ p }}</button>
                 {% endfor %}
             </div>
         </div>
@@ -419,12 +409,6 @@
     </div>
 
     <script>
-        function selectGrouping(grouping) {
-            const ticker = new URLSearchParams(window.location.search).get('ticker') || '{{ ticker }}';
-            const period = new URLSearchParams(window.location.search).get('period') || '{{ period }}';
-            window.location.href = '{{ url_for('chart') }}?ticker=' + ticker + '&period=' + period + '&grouping=' + grouping;
-        }
-
         // Load GARCH stats
         function loadGarchStats() {
             const ticker = '{{ ticker }}';

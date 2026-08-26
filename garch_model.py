@@ -77,13 +77,21 @@ def forecast_volatility(ticker, periods=5, p=1, q=1, days=252):
 
     try:
         forecast = model.forecast(horizon=periods)
-        variance_forecast = forecast.variance.values[-1, :]
+        # Handle both DataFrame and ndarray returns
+        if hasattr(forecast.variance, 'values'):
+            variance_forecast = forecast.variance.values[-1, :]
+        else:
+            variance_forecast = forecast.variance[-1, :]
+
         volatility_forecast = np.sqrt(variance_forecast)
+
+        # Get current volatility
+        current_vol = float(np.sqrt(model.conditional_volatility[-1]))
 
         return {
             'status': 'success',
             'ticker': ticker,
-            'current_volatility': float(np.sqrt(model.conditional_volatility.values[-1])),
+            'current_volatility': current_vol,
             'forecasted_volatility': volatility_forecast.tolist(),
             'forecast_periods': periods,
             'model_info': {

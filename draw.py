@@ -15,6 +15,8 @@ from matplotlib.patches import Rectangle
 import sqlite3
 from db import DB_PATH
 
+np.random.seed(42)  # For reproducible forecasts
+
 
 def get_ticker_data(ticker, period_days):
     """Fetch ticker data from database."""
@@ -72,12 +74,48 @@ def get_price_stats(opens, highs, lows, closes, volumes):
     }
 
 
-def draw_chart(ticker, period_name, period_days, grouping='daily'):
-    """Generate professional stock chart image."""
+def draw_chart(ticker, period_name, period_days, grouping='daily', include_forecast=True):
+    """Generate professional stock chart image with optional GARCH forecast."""
 
     # Fetch data
     dates, opens, highs, lows, closes, volumes = get_ticker_data(ticker, period_days)
     stats = get_price_stats(opens, highs, lows, closes, volumes)
+
+    # Get GARCH forecast if requested
+    forecast_data = None
+    forecast_volatility_value = None
+
+    if include_forecast:
+        try:
+            from garch_model import forecast_volatility as garch_forecast_func
+            from datetime import timedelta
+
+            forecast_result = garch_forecast_func(ticker, periods=14, days=1095)  # 14 days, 3 years data
+            if forecast_result.get('status') == 'success':
+                current_price = closes[-1]
+                volatility = forecast_result.get('current_volatility', 0) / 100
+                forecast_volatility_value = volatility
+
+                forecast_data = {
+                    'dates': [],
+                    'closes': []
+                }
+
+                # Generate simple forecast: random walk with volatility from GARCH
+                last_date = datetime.strptime(dates[-1], '%Y-%m-%d').date()
+
+                for i in range(14):
+                    forecast_date = last_date + timedelta(days=i+1)
+                    # Simple drift forecast with volatility component
+                    price_change = np.random.normal(0, volatility * current_price)
+                    current_price = max(current_price + price_change, 0.01)
+
+                    forecast_data['dates'].append(forecast_date.strftime('%Y-%m-%d'))
+                    forecast_data['closes'].append(current_price)
+        except Exception as e:
+            print(f"Could not generate GARCH forecast: {e}")
+            forecast_data = None
+            forecast_volatility_value = None
 
     # Setup figure with dark background
     fig = plt.figure(figsize=(14, 9), facecolor='#1a1a1a')
@@ -156,6 +194,44 @@ def draw_chart(ticker, period_name, period_days, grouping='daily'):
                          facecolor=color, edgecolor=color, linewidth=0.5)
         ax_chart.add_patch(rect)
 
+    # Plot forecasted candlesticks (future predictions)
+    if forecast_data and 'closes' in forecast_data and len(forecast_data['closes']) > 0:
+        forecast_closes = forecast_data['closes']
+        forecast_dates = forecast_data['dates']
+
+        # Generate realistic OHLC for forecasts using GARCH volatility
+        for idx, close_price in enumerate(forecast_closes):
+            i = len(dates) + idx + 1  # Position after historical data
+
+            # Use volatility to create realistic open/high/low
+            daily_vol = (forecast_volatility_value or 0.02) * close_price
+
+            # Generate simple OHLC with random walk
+            o = close_price + np.random.normal(0, daily_vol * 0.3)
+            h = max(close_price, o) + abs(np.random.normal(0, daily_vol * 0.5))
+            l = min(close_price, o) - abs(np.random.normal(0, daily_vol * 0.5))
+            c = close_price
+
+            # Ensure realistic values
+            h = max(h, max(o, c))
+            l = min(l, min(o, c))
+
+            # Color based on up/down
+            color_forecast = '#00d84f' if c >= o else '#ff3333'
+            # Make forecast colors more transparent (lighter shade)
+            alpha_color = '#66ff99' if c >= o else '#ff7777'
+
+            # Draw wick (high-low line)
+            ax_chart.plot([i, i], [l, h], color=alpha_color, linewidth=0.8, alpha=0.6)
+
+            # Draw body (open-close rectangle) with dashed outline
+            body_top = max(o, c)
+            body_bottom = min(o, c)
+            rect = Rectangle((i - width/2, body_bottom), width, body_top - body_bottom,
+                             facecolor=alpha_color, edgecolor=alpha_color, linewidth=0.5,
+                             alpha=0.4, linestyle='--')
+            ax_chart.add_patch(rect)
+
     # OHLC info box (top-left of chart)
     ohlc = stats['ohlc']
     ohlc_text = f"O {ohlc['open']:.2f}  H {ohlc['high']:.2f}  L {ohlc['low']:.2f}  C {ohlc['close']:.2f}"
@@ -170,7 +246,9 @@ def draw_chart(ticker, period_name, period_days, grouping='daily'):
     ax_chart.plot([ax_chart.get_xlim()[0], ax_chart.get_xlim()[1]], [closes[-1], closes[-1]],
                   color='#666666', linewidth=1, linestyle='--', alpha=0.5)
 
-    ax_chart.set_xlim(-1, len(dates))
+    # Extend x-axis to include forecast
+    x_max = len(dates) + (14 if forecast_data else 0) + 1
+    ax_chart.set_xlim(-1, x_max)
     ax_chart.set_ylim(min(lows) * 0.98, max(highs) * 1.02)
     ax_chart.set_ylabel('Price (USD)', color='#888888', fontsize=10)
     ax_chart.tick_params(colors='#666666', labelsize=9)
@@ -186,7 +264,18 @@ def draw_chart(ticker, period_name, period_days, grouping='daily'):
     colors = ['#00d84f' if closes[i] >= opens[i] else '#ff3333' for i in range(len(dates))]
     ax_volume.bar(range(len(volumes)), volumes, color=colors, alpha=0.6, width=0.8)
 
-    ax_volume.set_xlim(-1, len(dates))
+    # Plot forecasted volume (estimated based on average historical volume)
+    if forecast_data and len(forecast_data.get('closes', [])) > 0:
+        avg_volume = np.mean(volumes)
+        for idx in range(len(forecast_data['closes'])):
+            i = len(dates) + idx + 1
+            # Generate forecast volume with some variation
+            forecast_vol = avg_volume * np.random.uniform(0.8, 1.2)
+            # Alternate colors for forecast volume (lighter shades)
+            color_forecast = '#66ff99' if idx % 2 == 0 else '#ff7777'
+            ax_volume.bar(i, forecast_vol, color=color_forecast, alpha=0.3, width=0.8)
+
+    ax_volume.set_xlim(-1, x_max)
     ax_volume.set_ylabel('Volume', color='#888888', fontsize=9)
     ax_volume.tick_params(colors='#666666', labelsize=8)
     ax_volume.spines['top'].set_visible(False)

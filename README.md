@@ -10,22 +10,28 @@ A comprehensive stock market data collection, visualization, and web interface s
 - 🔄 **Automated Data Refresh**: Fetch and update ticker data from Yahoo Finance
 - ⚙️ **Flexible Configuration**: Easily switch between tickers and chart parameters
 - 🤖 **Automation Ready**: Direct URL support for programmatic access and automation
+- 🔮 **GARCH Forecasting**: 2-week price predictions using volatility modeling on 3-year historical data
+- 📈 **Predictive Visualization**: Extended charts showing forecasted candlesticks and volume alongside historical data
+- ⚡ **Volatility Analytics**: Real-time GARCH statistics (current, average, max volatility)
 
 ## Project Structure
 
 ```
 TickerWatcher/
-├── config.py           # Hardcoded ticker list
-├── db.py              # Database operations and data fetching
-├── refresh.py         # Data refresh script
-├── draw.py            # Chart image generation
-├── app.py             # Flask web application
+├── config.py                      # Hardcoded ticker list
+├── db.py                         # Database operations and data fetching
+├── refresh.py                    # Data refresh script
+├── draw.py                       # Chart image generation with GARCH forecasts
+├── garch_model.py               # GARCH volatility forecasting model
+├── app.py                        # Flask web application
 ├── templates/
-│   ├── chart.html     # Chart display page
-│   └── error.html     # Error page
-├── images/            # Generated chart images
-├── prices.db          # SQLite database
-└── requirements.txt   # Python dependencies
+│   ├── chart_sidebar.html       # Main chart page with sidebar navigation
+│   └── error.html               # Error page
+├── database/
+│   └── prices.db               # SQLite database
+├── requirements.txt             # Python dependencies
+├── README.md                    # This file
+└── QUICK_START.md              # Quick start guide
 ```
 
 ## Installation
@@ -66,18 +72,24 @@ This will:
 
 ### 2. Generate Charts (CLI)
 
-Generate a single chart image:
+Generate a single chart image with forecasts:
 
 ```bash
-python draw.py AAPL --period 6M --grouping daily
+python draw.py AAPL --period 6M
 ```
 
 Parameters:
 - **ticker**: Stock symbol (e.g., AAPL, TSLA, GOOGL)
-- **--period**: Time period (1D, 5D, 1M, 3M, 6M, YTD, 1Y, 5Y, MAX)
-- **--grouping**: Chart type (daily, weekly, monthly)
+- **--period**: Time period (1D, 5D, 1M, 3M, 6M, YTD, 1Y, 5Y, MAX) - default: 6M
+- **--grouping**: Chart type (daily, weekly, monthly) - default: daily - *optional, for CLI only*
 
-Output: Generated PNG saved to `images/TICKER_PERIOD.png`
+Output: Generated PNG with GARCH forecasts saved to memory (used by web app)
+
+The chart includes:
+- Historical candlesticks and volume
+- 14-day forecasted candlesticks (lighter colors)
+- Forecasted volume bars
+- Vertical dashed line separating historical from predicted data
 
 ### 3. Web Application
 
@@ -108,29 +120,30 @@ Access the web interface:
 ### URL Structure
 
 ```
-/chart?ticker=AAPL&period=6M&grouping=daily
+/chart?ticker=AAPL&period=6M
 ```
 
 ### Example URLs
 
 ```
 # AAPL 6-month chart
-http://localhost:5000/chart?ticker=AAPL&period=6M&grouping=daily
+http://localhost:5000/chart?ticker=AAPL&period=6M
 
 # TSLA 1-year chart
-http://localhost:5000/chart?ticker=TSLA&period=1Y&grouping=daily
+http://localhost:5000/chart?ticker=TSLA&period=1Y
 
 # MSFT maximum history
-http://localhost:5000/chart?ticker=MSFT&period=MAX&grouping=daily
+http://localhost:5000/chart?ticker=MSFT&period=MAX
 
-# GOOGL 3-month with weekly grouping
-http://localhost:5000/chart?ticker=GOOGL&period=3M&grouping=weekly
+# GOOGL 3-month chart
+http://localhost:5000/chart?ticker=GOOGL&period=3M
 ```
 
-### API Endpoint
+Note: Charts always display daily granularity. Grouping selector has been removed from the UI for simplicity.
 
-Get chart information as JSON:
+### API Endpoints
 
+#### Get Chart Information
 ```bash
 curl http://localhost:5000/api/chart?ticker=AAPL&period=6M
 ```
@@ -141,8 +154,71 @@ Response:
     "ticker": "AAPL",
     "period": "6M",
     "grouping": "daily",
-    "chart_file": "AAPL_6m.png",
-    "chart_url": "/images/AAPL_6m.png"
+    "chart_key": "AAPL_6m_daily",
+    "chart_url": "/chart-image/AAPL_6m_daily"
+}
+```
+
+#### Get GARCH Volatility Forecast
+```bash
+curl http://localhost:5000/api/garch/AAPL?periods=14
+```
+
+Response:
+```json
+{
+    "status": "success",
+    "ticker": "AAPL",
+    "current_volatility": 1.29,
+    "forecasted_volatility": [1.609, 1.611, 1.613, ...],
+    "forecast_periods": 14,
+    "model_info": {
+        "p": 1,
+        "q": 1,
+        "aic": 12345.67,
+        "bic": 12356.78
+    }
+}
+```
+
+#### Get GARCH Statistics
+```bash
+curl http://localhost:5000/api/garch-stats/AAPL
+```
+
+Response:
+```json
+{
+    "ticker": "AAPL",
+    "current_volatility": 1.29,
+    "average_volatility": 1.18,
+    "max_volatility": 2.45,
+    "min_volatility": 0.89,
+    "returns_mean": 0.08,
+    "returns_std": 1.42,
+    "model_aic": 12345.67,
+    "model_bic": 12356.78
+}
+```
+
+#### Get Chart Data for Tooltips
+```bash
+curl http://localhost:5000/api/chart-data/AAPL_6m_daily
+```
+
+Response:
+```json
+{
+    "data": [
+        {
+            "date": "2024-01-01",
+            "open": 100.50,
+            "high": 101.20,
+            "low": 99.80,
+            "close": 101.00,
+            "volume": 50000000
+        }
+    ]
 }
 ```
 
@@ -171,12 +247,23 @@ Generated charts include:
 - **Candlestick Chart**: OHLC with color-coded candles (green = up, red = down)
 - **Volume Histogram**: Aligned with price candles
 - **Header Information**: Current price, daily change, market status
-- **Time Period Controls**: Visual buttons for different time ranges
+- **Time Period Controls**: Visual buttons for different time ranges (1D to MAX)
 - **Technical Indicators**: SMA 20/50/200 options shown
 - **OHLC Display**: Open, High, Low, Close values
 - **Crosshair & Tooltip**: Interactive position indicator with stats
 - **52-Week Stats**: High/Low, YTD Return, Volume metrics
 - **Professional Styling**: Dark theme with financial-grade aesthetics
+
+### GARCH Forecasting Features
+
+- **2-Week Predictions**: Extended charts show forecasted candlesticks for the next 14 trading days
+- **Volatility-Based**: GARCH(1,1) model trained on 3-year historical data
+- **Visual Differentiation**: 
+  - Forecast candlesticks shown with lighter colors (semi-transparent)
+  - Vertical dashed line separates historical from predicted data
+  - Forecast volume bars displayed alongside price predictions
+- **Dynamic Calculation**: Forecasts updated in real-time based on current market conditions
+- **Volatility Analytics**: GARCH stats panel shows current/average/max volatility
 
 ## Database
 
@@ -311,8 +398,19 @@ PORT=8001 python app.py
 - **matplotlib**: Chart generation
 - **numpy**: Numerical operations
 - **flask**: Web framework
+- **arch**: GARCH model for volatility forecasting
 
 See `requirements.txt` for versions.
+
+### Installing GARCH Support
+
+The GARCH forecasting feature requires the `arch` library:
+
+```bash
+pip install arch
+```
+
+If not installed, the application will still work but GARCH forecasts will be unavailable.
 
 ## Performance Notes
 

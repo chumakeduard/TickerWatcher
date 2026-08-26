@@ -68,7 +68,7 @@ def ensure_chart_exists(ticker, period, grouping='daily'):
 
     if cache_key not in chart_cache:
         try:
-            chart_bytes = draw_chart(ticker, period, get_period_days(period), grouping)
+            chart_bytes = draw_chart(ticker, period, get_period_days(period), grouping, include_forecast=True)
             chart_cache[cache_key] = chart_bytes
             # Also cache the data for tooltips
             chart_data_cache[cache_key] = get_chart_data_for_tooltip(ticker, get_period_days(period))
@@ -106,15 +106,13 @@ def chart():
     """Display chart for selected ticker."""
     ticker = request.args.get('ticker', TICKERS[0]).upper()
     period = request.args.get('period', '6M')
-    grouping = request.args.get('grouping', 'daily')
+    grouping = 'daily'  # Always use daily grouping
 
     # Validate inputs
     if ticker not in TICKERS:
         ticker = TICKERS[0]
     if period not in PERIODS:
         period = '6M'
-    if grouping not in GROUPINGS:
-        grouping = 'daily'
 
     # Ensure chart exists in cache
     chart_key = ensure_chart_exists(ticker, period, grouping)
@@ -126,11 +124,9 @@ def chart():
     return render_template('chart_sidebar.html',
                           ticker=ticker,
                           period=period,
-                          grouping=grouping,
                           chart_key=chart_key,
                           tickers=TICKERS,
-                          periods=PERIODS,
-                          groupings=GROUPINGS)
+                          periods=PERIODS)
 
 
 @app.route('/api/chart')
@@ -217,5 +213,5 @@ def api_chart_data(chart_key):
 
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
+    port = int(os.environ.get('PORT', 8080))
     app.run(debug=True, host='0.0.0.0', port=port)
