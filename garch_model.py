@@ -88,12 +88,17 @@ def forecast_volatility(ticker, periods=5, p=1, q=1, days=252):
         # Get current volatility
         current_vol = float(np.sqrt(model.conditional_volatility[-1]))
 
+        # Historical mean return, used as forecast drift (in % per day, same units as returns)
+        returns = get_ticker_returns(ticker, days)
+        returns_mean = float(np.mean(returns)) if returns is not None and len(returns) > 0 else 0.0
+
         return {
             'status': 'success',
             'ticker': ticker,
             'current_volatility': current_vol,
             'forecasted_volatility': volatility_forecast.tolist(),
             'forecast_periods': periods,
+            'returns_mean': returns_mean,
             'model_info': {
                 'p': p,
                 'q': q,

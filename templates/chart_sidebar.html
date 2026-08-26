@@ -361,6 +361,30 @@
 <body>
     <!-- Left Sidebar -->
     <div class="sidebar">
+        <!-- Threshold and Forecast Controls -->
+        <div class="sidebar-section" style="background-color: #1a2838; padding: 12px; border-radius: 4px; border: 1px solid #2a3f5a;">
+            <div class="sidebar-title">⚙️ Chart Controls</div>
+
+            <!-- Threshold Input -->
+            <div style="margin-bottom: 12px;">
+                <label style="font-size: 11px; color: #888; display: block; margin-bottom: 4px;">Price Move Threshold (%)</label>
+                <input type="number" id="threshold-input" value="{{ threshold_pct }}" min="0.1" max="100" step="0.5"
+                       style="width: 100%; padding: 6px; background-color: #0a0e27; border: 1px solid #2a3f5a; color: #00d84f; border-radius: 3px; box-sizing: border-box;">
+            </div>
+
+            <!-- Forecast Days Input -->
+            <div>
+                <label style="font-size: 11px; color: #888; display: block; margin-bottom: 4px;">Forecast Days</label>
+                <input type="number" id="forecast-input" value="{{ forecast_days_override or 14 }}" min="1" max="60" step="1"
+                       style="width: 100%; padding: 6px; background-color: #0a0e27; border: 1px solid #2a3f5a; color: #00d84f; border-radius: 3px; box-sizing: border-box;">
+            </div>
+
+            <button onclick="applyChartControls()"
+                    style="width: 100%; margin-top: 8px; padding: 6px; background-color: #00d84f; color: #000; border: none; border-radius: 3px; font-weight: 600; cursor: pointer;">
+                Apply
+            </button>
+        </div>
+
         <!-- Ticker Selection -->
         <div class="sidebar-section">
             <div class="sidebar-title">📊 Tickers</div>
@@ -392,6 +416,14 @@
                 </div>
             </div>
         </div>
+
+        <!-- Refresh Data (pinned to bottom of sidebar) -->
+        <div class="sidebar-section" style="margin-top: auto;">
+            <button id="refresh-btn" class="selector-btn" onclick="startRefresh()" style="width: 100%; text-align: center;">
+                🔄 Refresh Data
+            </button>
+            <div id="refresh-status" style="font-size: 11px; color: #888; margin-top: 8px; text-align: center; min-height: 14px;"></div>
+        </div>
     </div>
 
     <!-- Main Content -->
@@ -409,6 +441,96 @@
     </div>
 
     <script>
+        // Apply chart control changes (threshold and forecast days)
+        function applyChartControls() {
+            const threshold = parseFloat(document.getElementById('threshold-input').value) || 10;
+            const forecastDays = parseInt(document.getElementById('forecast-input').value) || 14;
+            const params = new URLSearchParams(window.location.search);
+
+            params.set('threshold', threshold);
+            params.set('forecast_days', forecastDays);
+
+            window.location.href = '{{ url_for('chart') }}?' + params.toString();
+        }
+
+        // Allow Enter key to apply controls
+        document.getElementById('threshold-input').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') applyChartControls();
+        });
+        document.getElementById('forecast-input').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') applyChartControls();
+        });
+
+        // Refresh Data button: kicks off refresh.py's update logic in the
+        // background, polls until it finishes, then reloads the page so the
+        // chart is regenerated from the caught-up data.
+        function startRefresh() {
+            const btn = document.getElementById('refresh-btn');
+            const status = document.getElementById('refresh-status');
+
+            btn.disabled = true;
+            btn.style.opacity = '0.6';
+            btn.textContent = '⏳ Refreshing...';
+            status.textContent = 'Fetching latest data for all tickers...';
+
+            fetch('/api/refresh', { method: 'POST' })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.status === 'already_running') {
+                        status.textContent = 'A refresh is already in progress...';
+                    }
+                    pollRefreshStatus();
+                })
+                .catch(() => {
+                    status.textContent = '❌ Could not start refresh';
+                    btn.disabled = false;
+                    btn.style.opacity = '1';
+                    btn.textContent = '🔄 Refresh Data';
+                });
+        }
+
+        function pollRefreshStatus() {
+            const btn = document.getElementById('refresh-btn');
+            const status = document.getElementById('refresh-status');
+
+            const interval = setInterval(() => {
+                fetch('/api/refresh/status')
+                    .then(r => r.json())
+                    .then(data => {
+                        if (!data.running) {
+                            clearInterval(interval);
+                            if (data.last_result === 'success') {
+                                status.textContent = '✅ Data updated! Reloading chart...';
+                                setTimeout(() => window.location.reload(), 800);
+                            } else {
+                                btn.disabled = false;
+                                btn.style.opacity = '1';
+                                btn.textContent = '🔄 Refresh Data';
+                                status.textContent = '❌ Refresh failed' + (data.error ? ': ' + data.error : '');
+                            }
+                        }
+                    })
+                    .catch(() => clearInterval(interval));
+            }, 1500);
+        }
+
+        // If a refresh was already running when the page loaded (e.g. started
+        // from another tab), pick up polling immediately instead of missing it.
+        fetch('/api/refresh/status')
+            .then(r => r.json())
+            .then(data => {
+                if (data.running) {
+                    const btn = document.getElementById('refresh-btn');
+                    const status = document.getElementById('refresh-status');
+                    btn.disabled = true;
+                    btn.style.opacity = '0.6';
+                    btn.textContent = '⏳ Refreshing...';
+                    status.textContent = 'Fetching latest data for all tickers...';
+                    pollRefreshStatus();
+                }
+            })
+            .catch(() => {});
+
         // Load GARCH stats
         function loadGarchStats() {
             const ticker = '{{ ticker }}';

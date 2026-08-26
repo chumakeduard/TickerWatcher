@@ -15,8 +15,6 @@ from matplotlib.patches import Rectangle
 import sqlite3
 from db import DB_PATH
 
-np.random.seed(42)  # For reproducible forecasts
-
 
 def get_ticker_data(ticker, period_days):
     """Fetch ticker data from database."""
@@ -74,7 +72,7 @@ def get_price_stats(opens, highs, lows, closes, volumes):
     }
 
 
-def draw_chart(ticker, period_name, period_days, grouping='daily', include_forecast=True, forecast_days=14):
+def draw_chart(ticker, period_name, period_days, grouping='daily', include_forecast=True, forecast_days=14, threshold_pct=10.0):
     """Generate professional stock chart image with optional GARCH forecast.
 
     Args:
@@ -83,11 +81,31 @@ def draw_chart(ticker, period_name, period_days, grouping='daily', include_forec
             - 5D → 5 days
             - 1M/3M/6M → 14 days
             - YTD/1Y/5Y/MAX → 21 days (1 month)
+        threshold_pct: Percentage threshold for marking significant price moves (default 10%)
     """
 
     # Fetch data
     dates, opens, highs, lows, closes, volumes = get_ticker_data(ticker, period_days)
     stats = get_price_stats(opens, highs, lows, closes, volumes)
+
+    # Identify days with significant price moves (drops/rises > threshold)
+    significant_moves = []
+    for i in range(len(closes)):
+        if i == 0:
+            prev_close = closes[0]
+        else:
+            prev_close = closes[i - 1]
+
+        pct_change = ((closes[i] - prev_close) / prev_close * 100) if prev_close != 0 else 0
+
+        if abs(pct_change) >= threshold_pct:
+            is_drop = pct_change < 0
+            significant_moves.append({
+                'index': i,
+                'date': dates[i],
+                'pct_change': pct_change,
+                'is_drop': is_drop
+            })
 
     # Get GARCH forecast if requested
     forecast_data = None
@@ -101,25 +119,40 @@ def draw_chart(ticker, period_name, period_days, grouping='daily', include_forec
             forecast_result = garch_forecast_func(ticker, periods=forecast_days, days=1095)  # 3 years data
             if forecast_result.get('status') == 'success':
                 current_price = closes[-1]
-                volatility = forecast_result.get('current_volatility', 0) / 100
-                forecast_volatility_value = volatility
+
+                # Per-day volatility term structure from the GARCH horizon forecast
+                # (falls back to the flat current volatility if the array is short/missing)
+                current_vol = forecast_result.get('current_volatility', 0) / 100
+                per_day_vol = [v / 100 for v in forecast_result.get('forecasted_volatility', [])]
+                if not per_day_vol:
+                    per_day_vol = [current_vol] * forecast_days
+                forecast_volatility_value = per_day_vol[0] if per_day_vol else current_vol
+
+                # Historical mean daily return used as forecast drift (was previously ignored,
+                # so every horizon was a zero-mean random walk indistinguishable from any other)
+                drift = forecast_result.get('returns_mean', 0.0) / 100
 
                 forecast_data = {
                     'dates': [],
-                    'closes': []
+                    'closes': [],
+                    'volatility': []  # per-day vol actually used, reused by the candle renderer below
                 }
 
-                # Generate simple forecast: random walk with volatility from GARCH
+                # Generate forecast: random walk with GARCH-forecasted, day-specific volatility + drift
                 last_date = datetime.strptime(dates[-1], '%Y-%m-%d').date()
 
                 for i in range(forecast_days):
                     forecast_date = last_date + timedelta(days=i+1)
-                    # Simple drift forecast with volatility component
-                    price_change = np.random.normal(0, volatility * current_price)
+                    day_vol = per_day_vol[i] if i < len(per_day_vol) else per_day_vol[-1]
+
+                    drift_component = current_price * drift
+                    shock_component = np.random.normal(0, day_vol * current_price)
+                    price_change = drift_component + shock_component
                     current_price = max(current_price + price_change, 0.01)
 
                     forecast_data['dates'].append(forecast_date.strftime('%Y-%m-%d'))
                     forecast_data['closes'].append(current_price)
+                    forecast_data['volatility'].append(day_vol)
         except Exception as e:
             print(f"Could not generate GARCH forecast: {e}")
             forecast_data = None
@@ -203,16 +236,21 @@ def draw_chart(ticker, period_name, period_days, grouping='daily', include_forec
         ax_chart.add_patch(rect)
 
     # Plot forecasted candlesticks (future predictions)
+    forecast_highs = []
+    forecast_lows = []
     if forecast_data and 'closes' in forecast_data and len(forecast_data['closes']) > 0:
         forecast_closes = forecast_data['closes']
         forecast_dates = forecast_data['dates']
+        forecast_vols = forecast_data.get('volatility', [])
 
         # Generate realistic OHLC for forecasts using GARCH volatility
         for idx, close_price in enumerate(forecast_closes):
             i = len(dates) + idx + 1  # Position after historical data
 
-            # Use volatility to create realistic open/high/low
-            daily_vol = (forecast_volatility_value or 0.02) * close_price
+            # Use this day's own forecasted volatility (not a single flat value for
+            # every day) so uncertainty actually widens/narrows across the horizon
+            day_vol = forecast_vols[idx] if idx < len(forecast_vols) else (forecast_volatility_value or 0.02)
+            daily_vol = day_vol * close_price
 
             # Generate simple OHLC with random walk
             o = close_price + np.random.normal(0, daily_vol * 0.3)
@@ -223,6 +261,8 @@ def draw_chart(ticker, period_name, period_days, grouping='daily', include_forec
             # Ensure realistic values
             h = max(h, max(o, c))
             l = min(l, min(o, c))
+            forecast_highs.append(h)
+            forecast_lows.append(l)
 
             # Color based on up/down
             color_forecast = '#00d84f' if c >= o else '#ff3333'
@@ -247,6 +287,18 @@ def draw_chart(ticker, period_name, period_days, grouping='daily', include_forec
                   transform=ax_chart.transAxes, va='top',
                   bbox=dict(boxstyle='round,pad=0.5', facecolor='#222222', edgecolor='#444444', alpha=0.8))
 
+    # Mark significant price moves (drops/rises > threshold) with vertical lines and labels
+    for move in significant_moves:
+        line_color = '#ff3333' if move['is_drop'] else '#00d84f'  # Red for drop, green for rise
+        ax_chart.axvline(x=move['index'], color=line_color, linewidth=1.5, alpha=0.6, linestyle='-')
+
+        # Add date label above/below the line
+        label_text = f"{move['date']}\n{move['pct_change']:+.1f}%"
+        y_pos = ax_chart.get_ylim()[1] * 0.95 if move['is_drop'] else ax_chart.get_ylim()[1] * 0.92
+        ax_chart.text(move['index'], y_pos, label_text, fontsize=8, color=line_color,
+                      ha='center', va='top',
+                      bbox=dict(boxstyle='round,pad=0.3', facecolor='#1a1a1a', edgecolor=line_color, alpha=0.8))
+
     # Crosshair on last candle
     last_i = len(dates) - 1
     ax_chart.plot([last_i, last_i], [ax_chart.get_ylim()[0], ax_chart.get_ylim()[1]],
@@ -257,7 +309,12 @@ def draw_chart(ticker, period_name, period_days, grouping='daily', include_forec
     # Extend x-axis to include forecast
     x_max = len(dates) + (forecast_days if forecast_data else 0) + 1
     ax_chart.set_xlim(-1, x_max)
-    ax_chart.set_ylim(min(lows) * 0.98, max(highs) * 1.02)
+
+    # Y-axis must also account for forecast highs/lows, which can (and often do,
+    # now that drift + real volatility are used) extend beyond the historical range
+    y_low = min(lows + forecast_lows) if forecast_lows else min(lows)
+    y_high = max(highs + forecast_highs) if forecast_highs else max(highs)
+    ax_chart.set_ylim(y_low * 0.98, y_high * 1.02)
     ax_chart.set_ylabel('Price (USD)', color='#888888', fontsize=10)
     ax_chart.tick_params(colors='#666666', labelsize=9)
     ax_chart.spines['top'].set_visible(False)

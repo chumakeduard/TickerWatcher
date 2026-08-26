@@ -10,9 +10,10 @@ A comprehensive stock market data collection, visualization, and web interface s
 - 🔄 **Automated Data Refresh**: Fetch and update ticker data from Yahoo Finance
 - ⚙️ **Flexible Configuration**: Easily switch between tickers and chart parameters
 - 🤖 **Automation Ready**: Direct URL support for programmatic access and automation
-- 🔮 **GARCH Forecasting**: 2-week price predictions using volatility modeling on 3-year historical data
+- 🔮 **GARCH Forecasting**: Dynamic-length price predictions using the model's actual per-day volatility term structure plus historical drift, trained on 3-year historical data
 - 📈 **Predictive Visualization**: Extended charts showing forecasted candlesticks and volume alongside historical data
 - ⚡ **Volatility Analytics**: Real-time GARCH statistics (current, average, max volatility)
+- 🔄 **One-Click Refresh**: Sidebar button fetches the latest data for all tickers and reloads the chart automatically
 
 ## Project Structure
 
@@ -222,6 +223,22 @@ Response:
 }
 ```
 
+#### Refresh Data (all tickers)
+
+Also available as a "🔄 Refresh Data" button at the bottom of the sidebar in the web UI.
+
+```bash
+# Start a background refresh
+curl -X POST http://localhost:5000/api/refresh
+# {"status": "started"}   (or {"status": "already_running"} with HTTP 409)
+
+# Poll until it finishes
+curl http://localhost:5000/api/refresh/status
+# {"running": false, "last_run": "2026-08-26T10:14:27", "last_result": "success", "error": null}
+```
+
+Runs the same incremental-fetch logic as `python refresh.py`, in a background thread. On success, clears the in-memory chart cache so the next chart view regenerates with the newly fetched data.
+
 ## Configuration
 
 ### Tickers
@@ -267,6 +284,8 @@ Generated charts include:
   - Vertical dashed line separates historical from predicted data
   - Forecast volume bars displayed alongside price predictions
 - **Dynamic Calculation**: Forecasts updated in real-time based on current market conditions
+- **Term-Structure Aware**: Each forecasted day uses the model's own per-day volatility forecast (not a single flat number), so uncertainty genuinely evolves across the horizon
+- **Drift-Aware**: Forecast includes the ticker's historical mean return as drift, not just zero-mean noise
 - **Volatility Analytics**: GARCH stats panel shows current/average/max volatility
 
 ## Database
@@ -431,8 +450,9 @@ This project is provided as-is for educational and personal use.
 
 For issues or questions:
 1. Check the Troubleshooting section above
-2. Review Flask logs: `tail -f /tmp/flask.log`
-3. Verify all dependencies are installed: `pip list | grep -E "(flask|matplotlib|yfinance)"`
+2. Check [CHANGELOG.md](CHANGELOG.md) — many past issues are already documented there with root cause and fix
+3. Review Flask logs: `tail -f /tmp/flask.log`
+4. Verify all dependencies are installed: `pip list | grep -E "(flask|matplotlib|yfinance)"`
 
 ---
 

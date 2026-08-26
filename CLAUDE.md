@@ -2,8 +2,10 @@
 
 This document provides detailed technical information about the TickerWatcher application, particularly focusing on the GARCH forecasting features and implementation details.
 
+📋 **For a running log of every bug found and fixed, see [CHANGELOG.md](CHANGELOG.md).**
+
 ## Last Updated
-August 25, 2026
+August 26, 2026
 
 ## Current Status
 
@@ -15,6 +17,29 @@ August 25, 2026
 - Interactive tooltips for historical data
 - In-memory chart caching
 - Intelligent prediction scaling (short periods = short forecasts)
+- Forecasts use per-day GARCH volatility term structure + historical drift (fixed Aug 26, 2026 — see "Forecast Logic Bug Fix" below)
+- One-click data refresh button in sidebar (fixed Aug 26, 2026)
+
+## Forecast Logic Bug Fix (Aug 26, 2026)
+
+**Symptom reported:** predictions for different periods (3-day, 5-day, 14-day) looked "very matching" — statistically indistinguishable regardless of horizon length.
+
+**Root causes found in `draw.py`:**
+
+1. **Global fixed seed** — `np.random.seed(42)` at module import time pinned the *entire app's* random stream to one deterministic sequence, making forecasts replay identically across restarts.
+2. **Flat volatility (the real bug)** — `garch_model.forecast_volatility()` already computed a full per-day `forecasted_volatility` array (real GARCH term structure, since variance typically evolves toward the long-run level over the horizon), but `draw.py` only ever used the single scalar `current_volatility` for *every* simulated day. A 3-day and a 21-day forecast therefore used identical daily noise size — the only difference was how many times the same-sized step repeated.
+3. **Zero drift** — `np.random.normal(0, ...)` had mean 0; the historical mean return was computed elsewhere (`get_garch_stats`) but never passed into the forecast, so there was no directional signal at all, just noise around the last close.
+4. **Candle body generator repeated the same bug** — every forecast day's OHLC wick size used the same flat scalar, so uncertainty never widened further out.
+
+**Fix:**
+- Removed the global `np.random.seed(42)`.
+- `garch_model.forecast_volatility()` now also returns `returns_mean` (historical daily mean log return over the same fit window).
+- `draw_chart()` now consumes the **actual per-day `forecasted_volatility` array** (falls back to the flat value only if the array is empty) for both the price random walk and the candle-body OHLC generation, and adds the historical **drift** term to each day's step.
+- **Follow-on bug this exposed:** with real drift, forecast prices can move outside the historical high/low range — but `ax_chart.set_ylim()` was sized only from historical `lows`/`highs`, silently clipping forecast candles off-screen. Fixed by folding `forecast_highs`/`forecast_lows` (collected while generating forecast candles) into the y-axis range calculation.
+
+**Files touched:** `garch_model.py` (`forecast_volatility()`), `draw.py` (`draw_chart()`, seed removal, y-axis calc).
+
+**Caveat to keep in mind:** the day-to-day *volatility* now genuinely differs across horizons (GARCH term structure), but since all periods fit the model on the same fixed 3-year window and start from the same last close, the first N days of a long forecast will still resemble a fresh N-day forecast in overall *character* — they're no longer numerically flat/identical, but don't expect a completely different "shape" for the same ticker across periods. This is inherent to using one GARCH fit for all horizons, not a bug.
 
 ## Architecture Overview
 
@@ -43,6 +68,21 @@ External:
 - **Development**: Port 8080 (changed from 5000 due to macOS conflicts)
 - Can be overridden with `PORT` environment variable
 - Example: `PORT=5000 python app.py`
+
+## Refresh Data Button (Aug 26, 2026)
+
+A "🔄 Refresh Data" button is pinned to the bottom of the sidebar (below the GARCH stats panel).
+
+**Backend (`app.py`):**
+- `POST /api/refresh` — starts `refresh.update_ticker()` for every configured ticker in a background `threading.Thread` (daemon), guarded by `refresh_lock` so only one refresh can run at a time (`409 already_running` if one is already in flight). On success, clears both `chart_cache` and `chart_data_cache` so every chart regenerates from the caught-up data on next view.
+- `GET /api/refresh/status` — returns `{running, last_run, last_result, error}` for polling.
+
+**Frontend (`templates/chart_sidebar.html`):**
+- Click → `POST /api/refresh`, button disabled with "⏳ Refreshing..." text.
+- Polls `/api/refresh/status` every 1.5s; on completion, shows a status message and reloads the page (`window.location.reload()`) so the chart re-renders with fresh data.
+- On page load, also checks `/api/refresh/status` once — if a refresh was already running (started from another tab), immediately resumes polling instead of missing it.
+
+**Note:** this reuses `refresh.update_ticker()` from `refresh.py` directly (same incremental-fetch + backfill logic as the CLI script), so behavior is identical to running `python refresh.py` manually.
 
 ## Dynamic Forecast Periods Feature
 
