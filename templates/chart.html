@@ -244,9 +244,7 @@
                 <label>Time Period</label>
                 <div class="button-group">
                     {% for p in periods %}
-                    <a href="{{ url_for('chart', ticker=ticker, period=p, grouping=grouping) }}" style="text-decoration: none;">
-                        <button class="{% if p == period %}active{% endif %}">{{ p }}</button>
-                    </a>
+                    <button class="{% if p == period %}active{% endif %}" onclick="window.location.href = '{{ url_for('chart', ticker=ticker, period=p, grouping=grouping) }}'">{{ p }}</button>
                     {% endfor %}
                 </div>
             </div>

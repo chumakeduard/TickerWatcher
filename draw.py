@@ -6,6 +6,8 @@ import sys
 from pathlib import Path
 from datetime import datetime, timedelta
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')  # Use non-GUI backend for Flask
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.patches import Rectangle
