@@ -115,6 +115,33 @@
             font-weight: 700;
         }
 
+        .grouping-btn {
+            background-color: #1a2838;
+            color: #888;
+            border: 1px solid #2a3f5a;
+            padding: 8px 14px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .grouping-btn:hover {
+            background-color: #223344;
+            border-color: #445566;
+            color: #aaa;
+        }
+
+        .grouping-btn.active {
+            background-color: #00d84f;
+            color: #000;
+            border-color: #00d84f;
+            font-weight: 700;
+        }
+
         .ticker-selector {
             display: flex;
             gap: 6px;
@@ -252,17 +279,17 @@
             <!-- Grouping Selector -->
             <div class="control-group">
                 <label>Chart Grouping</label>
-                <select id="grouping-select" onchange="changeGrouping()" oninput="changeGrouping()">
+                <div class="button-group">
                     {% for g in groupings %}
-                    <option value="{{ g }}" {% if g == grouping %}selected{% endif %}>{{ g | capitalize }}</option>
+                    <button class="grouping-btn {% if g == grouping %}active{% endif %}" onclick="selectGrouping('{{ g }}')">{{ g | capitalize }}</button>
                     {% endfor %}
-                </select>
+                </div>
             </div>
         </div>
 
         <!-- Chart Display -->
         <div class="chart-container">
-            <img src="{{ url_for('serve_image', filename=chart_file) }}" alt="Chart for {{ ticker }}">
+            <img src="{{ url_for('serve_chart_image', chart_key=chart_key) }}" alt="Chart for {{ ticker }}">
             <div class="chart-info">
                 Chart for {{ ticker }} • {{ period }} • {{ grouping | capitalize }}
                 <div class="url-info">
@@ -274,16 +301,14 @@
     </div>
 
     <script>
-        // Handle grouping dropdown change
-        function changeGrouping() {
-            const groupingSelect = document.getElementById('grouping-select');
-            const grouping = groupingSelect.value;
+        // Handle grouping button click
+        function selectGrouping(grouping) {
             const ticker = new URLSearchParams(window.location.search).get('ticker') || '{{ ticker }}';
             const period = new URLSearchParams(window.location.search).get('period') || '{{ period }}';
             window.location.href = '{{ url_for('chart') }}?ticker=' + ticker + '&period=' + period + '&grouping=' + grouping;
         }
 
-        // Highlight active ticker based on URL
+        // Initialize on page load
         document.addEventListener('DOMContentLoaded', function() {
             // Check if page was loaded with new parameters
             const params = new URLSearchParams(window.location.search);
@@ -296,24 +321,15 @@
                 window.location.href = '{{ url_for('chart') }}?ticker=' + ticker + '&period=' + period + '&grouping=' + grouping;
             }
 
-            // Setup change listener for grouping select
-            // Use polling to detect changes since native events don't always fire
-            const groupingSelect = document.getElementById('grouping-select');
-            if (groupingSelect) {
-                let lastValue = groupingSelect.value;
-
-                // Monitor for value changes (polling method as fallback)
-                setInterval(function() {
-                    if (groupingSelect.value !== lastValue) {
-                        lastValue = groupingSelect.value;
-                        changeGrouping();
-                    }
-                }, 100);
-
-                // Also listen to change event
-                groupingSelect.addEventListener('change', changeGrouping);
-                groupingSelect.addEventListener('input', changeGrouping);
-            }
+            // Highlight active grouping button
+            const groupingButtons = document.querySelectorAll('.grouping-btn');
+            groupingButtons.forEach(btn => {
+                if (btn.textContent.toLowerCase() === (grouping || '{{ grouping }}').toLowerCase()) {
+                    btn.classList.add('active');
+                } else {
+                    btn.classList.remove('active');
+                }
+            });
         });
     </script>
 </body>

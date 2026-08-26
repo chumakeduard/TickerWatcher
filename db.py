@@ -7,7 +7,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = Path(__file__).parent / "prices.db"
+DB_PATH = Path(__file__).parent / "database" / "prices.db"
 MIN_YEARS = 50
 
 

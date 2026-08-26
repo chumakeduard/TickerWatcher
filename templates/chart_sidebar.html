@@ -1,0 +1,606 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TickerWatcher - {{ ticker }} Chart</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background-color: #0a0e27;
+            color: #e0e0e0;
+            display: flex;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        /* Left Sidebar */
+        .sidebar {
+            width: 300px;
+            background-color: #1a1f35;
+            border-right: 2px solid #2a3f5a;
+            padding: 20px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 30px;
+            resize: horizontal;
+            min-width: 200px;
+            max-width: 600px;
+        }
+
+        /* Resizable Divider */
+        .sidebar::after {
+            content: '';
+            position: absolute;
+            right: -5px;
+            top: 0;
+            width: 10px;
+            height: 100%;
+            cursor: col-resize;
+            background: transparent;
+        }
+
+        .sidebar-section {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .sidebar-title {
+            font-size: 12px;
+            font-weight: 700;
+            color: #00d84f;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            border-bottom: 1px solid #2a3f5a;
+            padding-bottom: 8px;
+        }
+
+        /* Main Content */
+        .main-content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            padding: 20px;
+        }
+
+        .header {
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid #2a3f5a;
+        }
+
+        .title {
+            font-size: 28px;
+            font-weight: 600;
+            color: #ffffff;
+        }
+
+        .title span {
+            color: #00d84f;
+            font-weight: 700;
+        }
+
+        /* Buttons */
+        .selector-btn {
+            background-color: #1a2838;
+            color: #888;
+            border: 1px solid #2a3f5a;
+            padding: 10px 14px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            text-align: left;
+        }
+
+        .selector-btn:hover {
+            background-color: #223344;
+            border-color: #445566;
+            color: #aaa;
+        }
+
+        .selector-btn.active {
+            background-color: #00d84f;
+            color: #000;
+            border-color: #00d84f;
+            font-weight: 700;
+        }
+
+        /* Button Groups */
+        .button-group {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        /* Ticker List */
+        .ticker-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0;
+            max-height: 250px;
+            overflow-y: auto;
+            border: 1px solid #2a3f5a;
+            border-radius: 4px;
+            background-color: #0a0e27;
+        }
+
+        .ticker-item {
+            padding: 12px 14px;
+            border-bottom: 1px solid #2a3f5a;
+            cursor: pointer;
+            transition: all 0.2s;
+            color: #888;
+            font-size: 13px;
+            font-weight: 600;
+            text-decoration: none;
+            display: block;
+            text-align: left;
+        }
+
+        .ticker-item:last-child {
+            border-bottom: none;
+        }
+
+        .ticker-item:hover {
+            background-color: #1a2838;
+            color: #aaa;
+            border-left: 3px solid #00d84f;
+            padding-left: 11px;
+        }
+
+        .ticker-item.active {
+            background-color: #1a2838;
+            color: #00d84f;
+            border-left: 3px solid #00d84f;
+            padding-left: 11px;
+            font-weight: 700;
+        }
+
+        /* Chart Container */
+        .chart-container {
+            flex: 1;
+            overflow: auto;
+            background-color: #1a1f35;
+            border: 1px solid #2a3f5a;
+            border-radius: 8px;
+            padding: 20px;
+            text-align: center;
+            position: relative;
+        }
+
+        .chart-wrapper {
+            position: relative;
+            display: inline-block;
+            max-width: 100%;
+        }
+
+        .chart-container img {
+            max-width: 100%;
+            height: auto;
+            border-radius: 4px;
+            box-shadow: 0 4px 20px rgba(0, 216, 79, 0.1);
+            display: block;
+        }
+
+        /* Tooltip Overlay */
+        .chart-tooltip {
+            position: absolute;
+            background-color: rgba(26, 40, 56, 0.95);
+            border: 1px solid #00d84f;
+            border-radius: 6px;
+            padding: 12px;
+            font-size: 12px;
+            color: #e0e0e0;
+            pointer-events: none;
+            z-index: 1000;
+            display: none;
+            min-width: 140px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+            white-space: nowrap;
+        }
+
+        .chart-tooltip.show {
+            display: block;
+        }
+
+        .tooltip-row {
+            display: flex;
+            justify-content: space-between;
+            gap: 20px;
+            padding: 3px 0;
+            border-bottom: 1px solid #2a3f5a;
+        }
+
+        .tooltip-row:last-child {
+            border-bottom: none;
+        }
+
+        .tooltip-label {
+            color: #888;
+        }
+
+        .tooltip-value {
+            color: #00d84f;
+            font-weight: 600;
+        }
+
+        .tooltip-value.red {
+            color: #ff3333;
+        }
+
+        .tooltip-date.red {
+            color: #ff3333;
+            border-bottom-color: #ff3333;
+        }
+
+        .tooltip-date.green {
+            color: #00d84f;
+            border-bottom-color: #00d84f;
+        }
+
+        .tooltip-date {
+            color: #00d84f;
+            font-weight: 700;
+            margin-bottom: 8px;
+            border-bottom: 1px solid #2a3f5a;
+            padding-bottom: 6px;
+        }
+
+        .chart-info {
+            color: #888;
+            font-size: 13px;
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 1px solid #2a3f5a;
+        }
+
+        /* GARCH Stats Panel */
+        .garch-panel {
+            background-color: #1a2838;
+            border: 1px solid #2a3f5a;
+            border-radius: 4px;
+            padding: 12px;
+            font-size: 11px;
+            color: #888;
+        }
+
+        .garch-panel h4 {
+            color: #00d84f;
+            margin-bottom: 8px;
+            font-size: 11px;
+            text-transform: uppercase;
+        }
+
+        .garch-stat {
+            display: flex;
+            justify-content: space-between;
+            padding: 4px 0;
+            border-bottom: 1px solid #1a2838;
+        }
+
+        .garch-stat:last-child {
+            border-bottom: none;
+        }
+
+        .garch-stat-label {
+            color: #666;
+        }
+
+        .garch-stat-value {
+            color: #00d84f;
+            font-weight: 600;
+        }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: #1a1f35;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #2a3f5a;
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #3a5f7a;
+        }
+
+        @media (max-width: 1024px) {
+            .sidebar {
+                width: 250px;
+            }
+
+            .sidebar-title {
+                font-size: 10px;
+            }
+
+            .selector-btn {
+                font-size: 11px;
+                padding: 8px 10px;
+            }
+        }
+
+        @media (max-width: 768px) {
+            body {
+                flex-direction: column;
+                height: auto;
+            }
+
+            .sidebar {
+                width: 100%;
+                max-height: 200px;
+                border-right: none;
+                border-bottom: 1px solid #2a3f5a;
+            }
+
+            .main-content {
+                flex: 1;
+                min-height: calc(100vh - 200px);
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- Left Sidebar -->
+    <div class="sidebar">
+        <!-- Ticker Selection -->
+        <div class="sidebar-section">
+            <div class="sidebar-title">📊 Tickers</div>
+            <div class="ticker-list">
+                {% for t in tickers %}
+                <a href="{{ url_for('chart', ticker=t, period=period, grouping=grouping) }}" class="ticker-item {% if t == ticker %}active{% endif %}">
+                    {{ t }}
+                </a>
+                {% endfor %}
+            </div>
+        </div>
+
+        <!-- Time Period Selection -->
+        <div class="sidebar-section">
+            <div class="sidebar-title">📅 Time Period</div>
+            <div class="button-group">
+                {% for p in periods %}
+                <button class="selector-btn {% if p == period %}active{% endif %}" onclick="window.location.href = '{{ url_for('chart', ticker=ticker, period=p, grouping=grouping) }}'">{{ p }}</button>
+                {% endfor %}
+            </div>
+        </div>
+
+        <!-- Chart Grouping -->
+        <div class="sidebar-section">
+            <div class="sidebar-title">📈 Grouping</div>
+            <div class="button-group">
+                {% for g in groupings %}
+                <button class="selector-btn {% if g == grouping %}active{% endif %}" onclick="selectGrouping('{{ g }}')">{{ g | capitalize }}</button>
+                {% endfor %}
+            </div>
+        </div>
+
+        <!-- GARCH Stats -->
+        <div class="sidebar-section">
+            <div id="garch-container" style="display: none;">
+                <div class="sidebar-title">⚡ Volatility (GARCH)</div>
+                <div class="garch-panel" id="garch-stats">
+                    <p style="text-align: center; padding: 10px;">Loading...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Content -->
+    <div class="main-content">
+        <div class="header">
+            <div class="title">TickerWatcher - <span>{{ ticker }}</span></div>
+        </div>
+
+        <div class="chart-container" id="chart-container">
+            <div class="chart-wrapper" id="chart-wrapper">
+                <img src="{{ url_for('serve_chart_image', chart_key=chart_key) }}" alt="Chart for {{ ticker }}" id="chart-img">
+                <div class="chart-tooltip" id="chart-tooltip"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function selectGrouping(grouping) {
+            const ticker = new URLSearchParams(window.location.search).get('ticker') || '{{ ticker }}';
+            const period = new URLSearchParams(window.location.search).get('period') || '{{ period }}';
+            window.location.href = '{{ url_for('chart') }}?ticker=' + ticker + '&period=' + period + '&grouping=' + grouping;
+        }
+
+        // Load GARCH stats
+        function loadGarchStats() {
+            const ticker = '{{ ticker }}';
+            fetch('/api/garch-stats/' + ticker)
+                .then(r => r.json())
+                .then(data => {
+                    if (data.status === 'error' || data.error) {
+                        console.log('GARCH unavailable:', data.message || data.error);
+                        return;
+                    }
+
+                    const html = `
+                        <div class="garch-stat">
+                            <span class="garch-stat-label">Current Vol</span>
+                            <span class="garch-stat-value">${data.current_volatility?.toFixed(2)}%</span>
+                        </div>
+                        <div class="garch-stat">
+                            <span class="garch-stat-label">Avg Vol</span>
+                            <span class="garch-stat-value">${data.average_volatility?.toFixed(2)}%</span>
+                        </div>
+                        <div class="garch-stat">
+                            <span class="garch-stat-label">Max Vol</span>
+                            <span class="garch-stat-value">${data.max_volatility?.toFixed(2)}%</span>
+                        </div>
+                        <div class="garch-stat">
+                            <span class="garch-stat-label">Returns Std</span>
+                            <span class="garch-stat-value">${data.returns_std?.toFixed(2)}%</span>
+                        </div>
+                    `;
+
+                    document.getElementById('garch-stats').innerHTML = html;
+                    document.getElementById('garch-container').style.display = 'flex';
+                    document.getElementById('garch-container').style.flexDirection = 'column';
+                    document.getElementById('garch-container').style.gap = '12px';
+                })
+                .catch(err => console.log('GARCH not available'));
+        }
+
+        // Chart Tooltip on Hover
+        let chartData = [];
+        const chartKey = '{{ chart_key }}';
+        const chartImg = document.getElementById('chart-img');
+        const chartWrapper = document.getElementById('chart-wrapper');
+        const tooltip = document.getElementById('chart-tooltip');
+
+        // Load chart data for tooltips
+        function loadChartData() {
+            fetch('/api/chart-data/' + chartKey)
+                .then(r => r.json())
+                .then(result => {
+                    if (result.data) {
+                        chartData = result.data;
+                    }
+                })
+                .catch(err => console.log('Chart data not available'));
+        }
+
+        // Handle chart hover
+        chartWrapper.addEventListener('mousemove', function(e) {
+            if (chartData.length === 0) return;
+
+            const rect = chartImg.getBoundingClientRect();
+            const wrapperRect = chartWrapper.getBoundingClientRect();
+            const x = e.clientX - wrapperRect.left;
+            const y = e.clientY - wrapperRect.top;
+
+            // Calculate which data point to show based on x position
+            const chartWidth = chartImg.offsetWidth;
+            const chartStartX = 0;
+            const chartEndX = chartWidth;
+
+            // Find the closest data point (approximate)
+            const relativeX = (x - chartStartX) / (chartEndX - chartStartX);
+            const dataIndex = Math.round(relativeX * (chartData.length - 1));
+
+            if (dataIndex >= 0 && dataIndex < chartData.length) {
+                const data = chartData[dataIndex];
+
+                // Determine if candle is red (down) or green (up)
+                const isRed = data.close < data.open;
+                const colorClass = isRed ? 'red' : 'green';
+
+                const tooltipHTML = `
+                    <div class="tooltip-date ${colorClass}">${data.date}</div>
+                    <div class="tooltip-row">
+                        <span class="tooltip-label">Open</span>
+                        <span class="tooltip-value ${colorClass}">$${data.open}</span>
+                    </div>
+                    <div class="tooltip-row">
+                        <span class="tooltip-label">High</span>
+                        <span class="tooltip-value ${colorClass}">$${data.high}</span>
+                    </div>
+                    <div class="tooltip-row">
+                        <span class="tooltip-label">Low</span>
+                        <span class="tooltip-value ${colorClass}">$${data.low}</span>
+                    </div>
+                    <div class="tooltip-row">
+                        <span class="tooltip-label">Close</span>
+                        <span class="tooltip-value ${colorClass}">$${data.close}</span>
+                    </div>
+                    <div class="tooltip-row">
+                        <span class="tooltip-label">Volume</span>
+                        <span class="tooltip-value ${colorClass}">${(data.volume / 1e6).toFixed(1)}M</span>
+                    </div>
+                `;
+
+                tooltip.innerHTML = tooltipHTML;
+                tooltip.classList.add('show');
+
+                // Position tooltip
+                tooltip.style.left = x + 10 + 'px';
+                tooltip.style.top = y - 120 + 'px';
+
+                // Keep tooltip in bounds
+                const tooltipRect = tooltip.getBoundingClientRect();
+                if (tooltipRect.right > window.innerWidth) {
+                    tooltip.style.left = (x - tooltipRect.width - 10) + 'px';
+                }
+                if (tooltipRect.top < 0) {
+                    tooltip.style.top = y + 10 + 'px';
+                }
+            }
+        });
+
+        chartWrapper.addEventListener('mouseleave', function() {
+            tooltip.classList.remove('show');
+        });
+
+        // Load GARCH stats and chart data on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            loadGarchStats();
+            loadChartData();
+        });
+
+        // Resizable divider between sidebar and content
+        let isResizing = false;
+        const sidebar = document.querySelector('.sidebar');
+        const body = document.body;
+
+        // Create invisible divider
+        const divider = document.createElement('div');
+        divider.style.cssText = `
+            width: 5px;
+            background: transparent;
+            cursor: col-resize;
+            user-select: none;
+            flex-shrink: 0;
+            z-index: 1000;
+        `;
+        divider.addEventListener('mousedown', startResize);
+        body.insertBefore(divider, sidebar.nextSibling);
+
+        function startResize(e) {
+            isResizing = true;
+            const startX = e.clientX;
+            const startWidth = sidebar.offsetWidth;
+
+            document.addEventListener('mousemove', doResize);
+            document.addEventListener('mouseup', stopResize);
+
+            function doResize(e) {
+                if (!isResizing) return;
+                const diff = e.clientX - startX;
+                const newWidth = startWidth + diff;
+
+                if (newWidth >= 200 && newWidth <= 600) {
+                    sidebar.style.width = newWidth + 'px';
+                }
+            }
+
+            function stopResize() {
+                isResizing = false;
+                document.removeEventListener('mousemove', doResize);
+                document.removeEventListener('mouseup', stopResize);
+            }
+        }
+    </script>
+</body>
+</html>

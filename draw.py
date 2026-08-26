@@ -5,6 +5,7 @@ import argparse
 import sys
 from pathlib import Path
 from datetime import datetime, timedelta
+from io import BytesIO
 import numpy as np
 import matplotlib
 matplotlib.use('Agg')  # Use non-GUI backend for Flask
@@ -169,12 +170,6 @@ def draw_chart(ticker, period_name, period_days, grouping='daily'):
     ax_chart.plot([ax_chart.get_xlim()[0], ax_chart.get_xlim()[1]], [closes[-1], closes[-1]],
                   color='#666666', linewidth=1, linestyle='--', alpha=0.5)
 
-    # Tooltip on last candle
-    tooltip_text = f"{dates[-1]}\n\nOpen   ${ohlc['open']:.2f}\nHigh   ${ohlc['high']:.2f}\nLow    ${ohlc['low']:.2f}\nClose  ${ohlc['close']:.2f}\nVolume {stats['avg_volume']/1e6:.1f}M"
-    ax_chart.text(0.98, 0.95, tooltip_text, fontsize=8, color='white',
-                  transform=ax_chart.transAxes, va='top', ha='right',
-                  bbox=dict(boxstyle='round,pad=0.7', facecolor='#222222', edgecolor='#00d84f', linewidth=1.5))
-
     ax_chart.set_xlim(-1, len(dates))
     ax_chart.set_ylim(min(lows) * 0.98, max(highs) * 1.02)
     ax_chart.set_ylabel('Price (USD)', color='#888888', fontsize=10)
@@ -213,13 +208,13 @@ Avg Volume: {stats['avg_volume']/1e6:.1f}M"""
                   transform=ax_stats.transAxes, va='top', family='monospace',
                   bbox=dict(boxstyle='round,pad=0.8', facecolor='#222222', edgecolor='#444444', alpha=0.9))
 
-    # Save image
-    output_path = Path(__file__).parent / 'images' / f'{ticker}_{period_name.lower()}.png'
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    plt.savefig(output_path, facecolor='#1a1a1a', dpi=150, bbox_inches='tight')
-    print(f"Chart saved to: {output_path}")
+    # Generate image as bytes instead of saving to disk
+    img_buffer = BytesIO()
+    plt.savefig(img_buffer, format='png', facecolor='#1a1a1a', dpi=150, bbox_inches='tight')
+    img_buffer.seek(0)
     plt.close()
+
+    return img_buffer.getvalue()
 
 
 def main():
