@@ -9,11 +9,12 @@ August 25, 2026
 
 ✅ **Complete Implementation**
 - GARCH(1,1) volatility forecasting model
-- 2-week price predictions on charts
+- Dynamic forecast periods (3-21 days based on selected timeframe)
 - Forecast volume visualization
 - Grouping selector removed from UI
 - Interactive tooltips for historical data
 - In-memory chart caching
+- Intelligent prediction scaling (short periods = short forecasts)
 
 ## Architecture Overview
 
@@ -42,6 +43,35 @@ External:
 - **Development**: Port 8080 (changed from 5000 due to macOS conflicts)
 - Can be overridden with `PORT` environment variable
 - Example: `PORT=5000 python app.py`
+
+## Dynamic Forecast Periods Feature
+
+### Intelligent Prediction Scaling
+
+The forecast period adapts based on the selected time range:
+
+```python
+def get_forecast_days(period):
+    """Map period to forecast days."""
+    period_map = {
+        '1D': 3,        # 3-day forecast for 1-day chart
+        '5D': 5,        # 5-day forecast for 1-week chart
+        '1M': 14,       # 2-week forecast for 1-month chart
+        '3M': 14,       # 2-week forecast for 3-month chart
+        '6M': 14,       # 2-week forecast for 6-month chart
+        'YTD': 21,      # 1-month forecast for YTD chart
+        '1Y': 21,       # 1-month forecast for 1-year chart
+        '5Y': 21,       # 1-month forecast for 5-year chart
+        'MAX': 21       # 1-month forecast for max history
+    }
+```
+
+### Benefits
+
+- **Short-term charts** (1D, 5D): Focused, near-term predictions
+- **Medium-term charts** (1M-6M): Consistent 2-week outlook
+- **Long-term charts** (YTD+): Extended 1-month strategic forecast
+- **Proportional scaling**: Forecast length matches chart scope
 
 ## GARCH Forecasting Implementation
 
@@ -111,15 +141,22 @@ if model is None:
 #### 2. **draw.py** - Chart Generation with Forecasts
 
 ```python
-def draw_chart(ticker, period_name, period_days, grouping='daily', include_forecast=True):
+def draw_chart(ticker, period_name, period_days, grouping='daily', include_forecast=True, forecast_days=14):
     """
     Generate professional stock chart with GARCH forecasts
+    
+    Args:
+        forecast_days: Number of days to forecast (dynamic based on period)
+            - 1D → 3 days
+            - 5D → 5 days
+            - 1M/3M/6M → 14 days
+            - YTD/1Y/5Y/MAX → 21 days
     
     Key features:
     - Plots historical candlesticks with proper OHLC
     - Generates forecast candlesticks using GARCH volatility
     - Shows forecast volume bars
-    - Extends x-axis to accommodate 14 forecast periods
+    - Extends x-axis to accommodate forecast periods
     - Returns PNG bytes for in-memory caching
     """
 ```
@@ -131,8 +168,9 @@ def draw_chart(ticker, period_name, period_days, grouping='daily', include_forec
 current_price = closes[-1]
 volatility = forecast_result.get('current_volatility', 0) / 100
 
-# 2. Generate 14 forecast days using random walk
-for i in range(14):
+# 2. Generate dynamic forecast days using random walk
+# forecast_days varies from 3 to 21 depending on selected period
+for i in range(forecast_days):
     # Daily volatility component
     daily_vol = volatility * close_price
     
@@ -178,16 +216,34 @@ if forecast_data:
 chart_cache = {}          # Stores PNG bytes
 chart_data_cache = {}     # Stores OHLCV data for tooltips
 
+def get_forecast_days(period):
+    """Map period to forecast days.
+    
+    - 1D → 3 days
+    - 5D → 5 days
+    - 1M/3M/6M → 14 days
+    - YTD/1Y/5Y/MAX → 21 days
+    """
+
 def ensure_chart_exists(ticker, period, grouping='daily'):
     """
     Generate and cache chart if not already cached
     
     Flow:
-    1. Generate chart with GARCH forecasts using draw_chart()
-    2. Cache PNG bytes for serving
-    3. Cache OHLCV data for tooltip display
-    4. Grouping is always 'daily' (no longer exposed in UI)
+    1. Get period days (historical data window)
+    2. Get forecast days (3-21 days based on period)
+    3. Generate chart with dynamic GARCH forecasts
+    4. Cache PNG bytes for serving
+    5. Cache OHLCV data for tooltip display
+    6. Grouping is always 'daily' (no longer exposed in UI)
     """
+    
+    period_days = get_period_days(period)
+    forecast_days = get_forecast_days(period)
+    chart_bytes = draw_chart(
+        ticker, period, period_days, grouping,
+        include_forecast=True, forecast_days=forecast_days
+    )
 ```
 
 **API Endpoints:**
@@ -404,17 +460,26 @@ python -c "from garch_model import forecast_volatility; print(forecast_volatilit
 python draw.py AAPL --period 6M
 
 # 3. Test API endpoints
-curl http://localhost:8080/api/garch/AAPL
+curl http://localhost:8080/api/garch/AAPL?periods=3
+curl http://localhost:8080/api/garch/AAPL?periods=14
+curl http://localhost:8080/api/garch/AAPL?periods=21
 curl http://localhost:8080/api/garch-stats/AAPL
 curl http://localhost:8080/api/chart-data/AAPL_6m_daily
 
-# 4. Test web interface
-open http://localhost:8080/chart?ticker=AAPL&period=6M
+# 4. Test web interface with different periods
+open http://localhost:8080/chart?ticker=AAPL&period=1D      # 3-day forecast
+open http://localhost:8080/chart?ticker=AAPL&period=5D      # 5-day forecast
+open http://localhost:8080/chart?ticker=AAPL&period=6M      # 14-day forecast
+open http://localhost:8080/chart?ticker=AAPL&period=1Y      # 21-day forecast
 
 # 5. Test multiple tickers
 for ticker in AAPL MSFT GOOGL TSLA; do
     curl http://localhost:8080/api/garch/$ticker
 done
+
+# 6. Verify forecast scaling
+# 1D should show ~3 forecast candlesticks
+# 1Y should show ~21 forecast candlesticks
 ```
 
 ### Browser Testing

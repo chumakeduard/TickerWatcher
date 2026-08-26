@@ -68,10 +68,15 @@ def ensure_chart_exists(ticker, period, grouping='daily'):
 
     if cache_key not in chart_cache:
         try:
-            chart_bytes = draw_chart(ticker, period, get_period_days(period), grouping, include_forecast=True)
+            period_days = get_period_days(period)
+            forecast_days = get_forecast_days(period)
+            chart_bytes = draw_chart(
+                ticker, period, period_days, grouping,
+                include_forecast=True, forecast_days=forecast_days
+            )
             chart_cache[cache_key] = chart_bytes
             # Also cache the data for tooltips
-            chart_data_cache[cache_key] = get_chart_data_for_tooltip(ticker, get_period_days(period))
+            chart_data_cache[cache_key] = get_chart_data_for_tooltip(ticker, period_days)
         except Exception as e:
             print(f"Error generating chart: {e}")
             return None
@@ -93,6 +98,28 @@ def get_period_days(period):
         'MAX': 1825
     }
     return period_map.get(period, 180)
+
+
+def get_forecast_days(period):
+    """Map period to forecast days.
+
+    - 1D → 3 days
+    - 5D → 5 days
+    - 1M/3M/6M → 14 days
+    - YTD/1Y/5Y/MAX → 21 days
+    """
+    period_map = {
+        '1D': 3,
+        '5D': 5,
+        '1M': 14,
+        '3M': 14,
+        '6M': 14,
+        'YTD': 21,
+        '1Y': 21,
+        '5Y': 21,
+        'MAX': 21
+    }
+    return period_map.get(period, 14)
 
 
 @app.route('/')

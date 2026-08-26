@@ -256,7 +256,11 @@ Generated charts include:
 
 ### GARCH Forecasting Features
 
-- **2-Week Predictions**: Extended charts show forecasted candlesticks for the next 14 trading days
+- **Dynamic Forecast Periods**: Forecast length adapts to selected time period
+  - **1D** → 3-day forecast
+  - **5D** → 5-day forecast  
+  - **1M/3M/6M** → 14-day forecast
+  - **YTD/1Y/5Y/MAX** → 21-day forecast (1 month)
 - **Volatility-Based**: GARCH(1,1) model trained on 3-year historical data
 - **Visual Differentiation**: 
   - Forecast candlesticks shown with lighter colors (semi-transparent)

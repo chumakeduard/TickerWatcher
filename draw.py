@@ -74,8 +74,16 @@ def get_price_stats(opens, highs, lows, closes, volumes):
     }
 
 
-def draw_chart(ticker, period_name, period_days, grouping='daily', include_forecast=True):
-    """Generate professional stock chart image with optional GARCH forecast."""
+def draw_chart(ticker, period_name, period_days, grouping='daily', include_forecast=True, forecast_days=14):
+    """Generate professional stock chart image with optional GARCH forecast.
+
+    Args:
+        forecast_days: Number of days to forecast
+            - 1D → 3 days
+            - 5D → 5 days
+            - 1M/3M/6M → 14 days
+            - YTD/1Y/5Y/MAX → 21 days (1 month)
+    """
 
     # Fetch data
     dates, opens, highs, lows, closes, volumes = get_ticker_data(ticker, period_days)
@@ -90,7 +98,7 @@ def draw_chart(ticker, period_name, period_days, grouping='daily', include_forec
             from garch_model import forecast_volatility as garch_forecast_func
             from datetime import timedelta
 
-            forecast_result = garch_forecast_func(ticker, periods=14, days=1095)  # 14 days, 3 years data
+            forecast_result = garch_forecast_func(ticker, periods=forecast_days, days=1095)  # 3 years data
             if forecast_result.get('status') == 'success':
                 current_price = closes[-1]
                 volatility = forecast_result.get('current_volatility', 0) / 100
@@ -104,7 +112,7 @@ def draw_chart(ticker, period_name, period_days, grouping='daily', include_forec
                 # Generate simple forecast: random walk with volatility from GARCH
                 last_date = datetime.strptime(dates[-1], '%Y-%m-%d').date()
 
-                for i in range(14):
+                for i in range(forecast_days):
                     forecast_date = last_date + timedelta(days=i+1)
                     # Simple drift forecast with volatility component
                     price_change = np.random.normal(0, volatility * current_price)
@@ -247,7 +255,7 @@ def draw_chart(ticker, period_name, period_days, grouping='daily', include_forec
                   color='#666666', linewidth=1, linestyle='--', alpha=0.5)
 
     # Extend x-axis to include forecast
-    x_max = len(dates) + (14 if forecast_data else 0) + 1
+    x_max = len(dates) + (forecast_days if forecast_data else 0) + 1
     ax_chart.set_xlim(-1, x_max)
     ax_chart.set_ylim(min(lows) * 0.98, max(highs) * 1.02)
     ax_chart.set_ylabel('Price (USD)', color='#888888', fontsize=10)
