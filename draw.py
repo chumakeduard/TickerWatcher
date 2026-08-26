@@ -1,0 +1,254 @@
+#!/usr/bin/env python3
+"""Generate professional stock market chart images."""
+
+import argparse
+import sys
+from pathlib import Path
+from datetime import datetime, timedelta
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+from matplotlib.patches import Rectangle
+import sqlite3
+from db import DB_PATH
+
+
+def get_ticker_data(ticker, period_days):
+    """Fetch ticker data from database."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    end_date = datetime.now().date()
+    start_date = end_date - timedelta(days=period_days)
+
+    cursor.execute('''
+        SELECT date, open, high, low, close, volume
+        FROM prices
+        WHERE ticker = ? AND date BETWEEN ? AND ?
+        ORDER BY date
+    ''', (ticker, start_date, end_date))
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    if not rows:
+        print(f"No data found for {ticker}")
+        sys.exit(1)
+
+    dates = [row['date'] for row in rows]
+    opens = [row['open'] for row in rows]
+    highs = [row['high'] for row in rows]
+    lows = [row['low'] for row in rows]
+    closes = [row['close'] for row in rows]
+    volumes = [row['volume'] for row in rows]
+
+    return dates, opens, highs, lows, closes, volumes
+
+
+def get_price_stats(opens, highs, lows, closes, volumes):
+    """Calculate price statistics."""
+    current_close = closes[-1]
+    prev_close = opens[0]
+    change = current_close - prev_close
+    change_pct = (change / prev_close) * 100 if prev_close != 0 else 0
+
+    return {
+        'current': current_close,
+        'change': change,
+        'change_pct': change_pct,
+        'high_52w': max(highs),
+        'low_52w': min(lows),
+        'avg_volume': np.mean(volumes),
+        'ohlc': {
+            'open': opens[-1],
+            'high': highs[-1],
+            'low': lows[-1],
+            'close': closes[-1]
+        }
+    }
+
+
+def draw_chart(ticker, period_name, period_days, grouping='daily'):
+    """Generate professional stock chart image."""
+
+    # Fetch data
+    dates, opens, highs, lows, closes, volumes = get_ticker_data(ticker, period_days)
+    stats = get_price_stats(opens, highs, lows, closes, volumes)
+
+    # Setup figure with dark background
+    fig = plt.figure(figsize=(14, 9), facecolor='#1a1a1a')
+    fig.suptitle('', y=0.98)
+
+    # Create grid layout
+    gs = fig.add_gridspec(12, 10, left=0.08, right=0.95, top=0.92, bottom=0.08,
+                          hspace=0.4, wspace=0.3)
+
+    # Header area
+    ax_header = fig.add_subplot(gs[0:1, :])
+    ax_header.axis('off')
+
+    # Main chart
+    ax_chart = fig.add_subplot(gs[1:8, :])
+
+    # Volume chart
+    ax_volume = fig.add_subplot(gs[8:10, :])
+
+    # ===== HEADER =====
+    header_text = f"{ticker} — Stock Price"
+    price_text = f"${stats['current']:.2f}"
+    change_color = '#00d84f' if stats['change'] >= 0 else '#ff3333'
+    change_text = f"{stats['change']:+.2f} ({stats['change_pct']:+.2f}%)"
+
+    ax_header.text(0.02, 0.6, header_text, fontsize=18, fontweight='bold',
+                   color='white', va='top', transform=ax_header.transAxes)
+    ax_header.text(0.02, 0.1, price_text, fontsize=24, fontweight='bold',
+                   color='white', va='top', transform=ax_header.transAxes)
+    ax_header.text(0.15, 0.2, change_text, fontsize=14, fontweight='bold',
+                   color=change_color, va='top', transform=ax_header.transAxes)
+    ax_header.text(0.35, 0.2, "Market Open", fontsize=11, color='#888888',
+                   va='top', transform=ax_header.transAxes)
+
+    # Time period buttons
+    periods = ['1D', '5D', '1M', '3M', '6M', 'YTD', '1Y', '5Y', 'MAX']
+    button_x = 0.5
+    for i, p in enumerate(periods):
+        x_pos = button_x + (i * 0.04)
+        color = '#00d84f' if p == period_name else '#555555'
+        weight = 'bold' if p == period_name else 'normal'
+        ax_header.text(x_pos, 0.15, p, fontsize=9, fontweight=weight,
+                      color=color, va='center', transform=ax_header.transAxes)
+
+    # SMA indicators
+    ax_header.text(0.5, 0.5, "SMA 20", fontsize=9, color='#888888',
+                   transform=ax_header.transAxes)
+    ax_header.text(0.58, 0.5, "SMA 50", fontsize=9, color='#888888',
+                   transform=ax_header.transAxes)
+    ax_header.text(0.66, 0.5, "SMA 200", fontsize=9, color='#888888',
+                   transform=ax_header.transAxes)
+
+    # Ticker selector
+    ax_header.text(0.88, 0.4, f"{ticker} ▾", fontsize=11, color='white',
+                   fontweight='bold', transform=ax_header.transAxes)
+
+    # ===== CANDLESTICK CHART =====
+    ax_chart.set_facecolor('#1a1a1a')
+    ax_chart.grid(True, color='#333333', linestyle='-', linewidth=0.3, alpha=0.3)
+
+    # Plot candlesticks
+    width = 0.6
+    for i in range(len(dates)):
+        o, h, l, c = opens[i], highs[i], lows[i], closes[i]
+
+        # Color based on up/down
+        color = '#00d84f' if c >= o else '#ff3333'
+
+        # Draw wick (high-low line)
+        ax_chart.plot([i, i], [l, h], color=color, linewidth=1)
+
+        # Draw body (open-close rectangle)
+        body_top = max(o, c)
+        body_bottom = min(o, c)
+        rect = Rectangle((i - width/2, body_bottom), width, body_top - body_bottom,
+                         facecolor=color, edgecolor=color, linewidth=0.5)
+        ax_chart.add_patch(rect)
+
+    # OHLC info box (top-left of chart)
+    ohlc = stats['ohlc']
+    ohlc_text = f"O {ohlc['open']:.2f}  H {ohlc['high']:.2f}  L {ohlc['low']:.2f}  C {ohlc['close']:.2f}"
+    ax_chart.text(0.01, 0.97, ohlc_text, fontsize=9, color='#cccccc',
+                  transform=ax_chart.transAxes, va='top',
+                  bbox=dict(boxstyle='round,pad=0.5', facecolor='#222222', edgecolor='#444444', alpha=0.8))
+
+    # Crosshair on last candle
+    last_i = len(dates) - 1
+    ax_chart.plot([last_i, last_i], [ax_chart.get_ylim()[0], ax_chart.get_ylim()[1]],
+                  color='#666666', linewidth=1, linestyle='--', alpha=0.5)
+    ax_chart.plot([ax_chart.get_xlim()[0], ax_chart.get_xlim()[1]], [closes[-1], closes[-1]],
+                  color='#666666', linewidth=1, linestyle='--', alpha=0.5)
+
+    # Tooltip on last candle
+    tooltip_text = f"{dates[-1]}\n\nOpen   ${ohlc['open']:.2f}\nHigh   ${ohlc['high']:.2f}\nLow    ${ohlc['low']:.2f}\nClose  ${ohlc['close']:.2f}\nVolume {stats['avg_volume']/1e6:.1f}M"
+    ax_chart.text(0.98, 0.95, tooltip_text, fontsize=8, color='white',
+                  transform=ax_chart.transAxes, va='top', ha='right',
+                  bbox=dict(boxstyle='round,pad=0.7', facecolor='#222222', edgecolor='#00d84f', linewidth=1.5))
+
+    ax_chart.set_xlim(-1, len(dates))
+    ax_chart.set_ylim(min(lows) * 0.98, max(highs) * 1.02)
+    ax_chart.set_ylabel('Price (USD)', color='#888888', fontsize=10)
+    ax_chart.tick_params(colors='#666666', labelsize=9)
+    ax_chart.spines['top'].set_visible(False)
+    ax_chart.spines['right'].set_visible(False)
+    ax_chart.spines['left'].set_color('#333333')
+    ax_chart.spines['bottom'].set_color('#333333')
+
+    # ===== VOLUME CHART =====
+    ax_volume.set_facecolor('#1a1a1a')
+    ax_volume.grid(True, color='#333333', linestyle='-', linewidth=0.3, alpha=0.3)
+
+    colors = ['#00d84f' if closes[i] >= opens[i] else '#ff3333' for i in range(len(dates))]
+    ax_volume.bar(range(len(volumes)), volumes, color=colors, alpha=0.6, width=0.8)
+
+    ax_volume.set_xlim(-1, len(dates))
+    ax_volume.set_ylabel('Volume', color='#888888', fontsize=9)
+    ax_volume.tick_params(colors='#666666', labelsize=8)
+    ax_volume.spines['top'].set_visible(False)
+    ax_volume.spines['right'].set_visible(False)
+    ax_volume.spines['left'].set_color('#333333')
+    ax_volume.spines['bottom'].set_color('#333333')
+
+    # ===== STATS PANEL (bottom right) =====
+    ax_stats = fig.add_subplot(gs[10:, 5:])
+    ax_stats.axis('off')
+
+    stats_text = f"""52W High: ${stats['high_52w']:.2f}
+52W Low: ${stats['low_52w']:.2f}
+YTD Return: {(stats['change_pct']/12):.2f}%
+1Y Return: {stats['change_pct']:.2f}%
+Avg Volume: {stats['avg_volume']/1e6:.1f}M"""
+
+    ax_stats.text(0.05, 0.95, stats_text, fontsize=9, color='#cccccc',
+                  transform=ax_stats.transAxes, va='top', family='monospace',
+                  bbox=dict(boxstyle='round,pad=0.8', facecolor='#222222', edgecolor='#444444', alpha=0.9))
+
+    # Save image
+    output_path = Path(__file__).parent / 'images' / f'{ticker}_{period_name.lower()}.png'
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    plt.savefig(output_path, facecolor='#1a1a1a', dpi=150, bbox_inches='tight')
+    print(f"Chart saved to: {output_path}")
+    plt.close()
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Generate stock market chart images')
+    parser.add_argument('ticker', help='Stock ticker symbol')
+    parser.add_argument('--period', default='6M',
+                        choices=['1D', '5D', '1M', '3M', '6M', 'YTD', '1Y', '5Y', 'MAX'],
+                        help='Time period for chart (default: 6M)')
+    parser.add_argument('--grouping', default='daily',
+                        choices=['daily', 'weekly', 'monthly'],
+                        help='Chart grouping option (default: daily)')
+
+    args = parser.parse_args()
+
+    # Map period to days
+    period_map = {
+        '1D': 1,
+        '5D': 5,
+        '1M': 30,
+        '3M': 90,
+        '6M': 180,
+        'YTD': 365,
+        '1Y': 365,
+        '5Y': 1825,
+        'MAX': 1825
+    }
+
+    period_days = period_map.get(args.period, 180)
+
+    draw_chart(args.ticker.upper(), args.period, period_days, args.grouping)
+
+
+if __name__ == '__main__':
+    main()

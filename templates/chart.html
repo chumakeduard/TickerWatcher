@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TickerWatcher - {{ ticker }} Chart</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background-color: #0a0e27;
+            color: #e0e0e0;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 30px;
+            padding-bottom: 20px;
+            border-bottom: 1px solid #1a2f4a;
+        }
+
+        .title {
+            font-size: 28px;
+            font-weight: 600;
+            color: #ffffff;
+        }
+
+        .title span {
+            color: #00d84f;
+            font-weight: 700;
+        }
+
+        .controls-section {
+            background-color: #1a1f35;
+            border: 1px solid #2a3f5a;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        .control-group {
+            margin-bottom: 15px;
+        }
+
+        .control-group label {
+            display: block;
+            font-size: 12px;
+            font-weight: 600;
+            color: #888;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 8px;
+        }
+
+        .control-group select {
+            background-color: #0a0e27;
+            color: #e0e0e0;
+            border: 1px solid #2a3f5a;
+            padding: 8px 12px;
+            border-radius: 4px;
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.2s;
+            min-width: 120px;
+        }
+
+        .control-group select:hover {
+            border-color: #00d84f;
+            background-color: #0f1429;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .button-group button {
+            background-color: #1a2838;
+            color: #888;
+            border: 1px solid #2a3f5a;
+            padding: 8px 14px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .button-group button:hover {
+            background-color: #223344;
+            border-color: #445566;
+            color: #aaa;
+        }
+
+        .button-group button.active {
+            background-color: #00d84f;
+            color: #000;
+            border-color: #00d84f;
+            font-weight: 700;
+        }
+
+        .ticker-selector {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+
+        .ticker-selector button {
+            background-color: #1a2838;
+            color: #888;
+            border: 1px solid #2a3f5a;
+            padding: 10px 16px;
+            border-radius: 4px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .ticker-selector button:hover {
+            background-color: #223344;
+            border-color: #445566;
+            color: #aaa;
+        }
+
+        .ticker-selector button.active {
+            background-color: #00d84f;
+            color: #000;
+            border-color: #00d84f;
+            font-weight: 700;
+        }
+
+        .chart-container {
+            background-color: #1a1f35;
+            border: 1px solid #2a3f5a;
+            border-radius: 8px;
+            padding: 20px;
+            text-align: center;
+        }
+
+        .chart-container img {
+            max-width: 100%;
+            height: auto;
+            border-radius: 4px;
+            box-shadow: 0 4px 20px rgba(0, 216, 79, 0.1);
+        }
+
+        .chart-info {
+            color: #888;
+            font-size: 13px;
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 1px solid #2a3f5a;
+        }
+
+        .url-info {
+            background-color: #1a2838;
+            border: 1px solid #2a3f5a;
+            border-radius: 4px;
+            padding: 12px;
+            margin-top: 15px;
+            font-size: 12px;
+            font-family: 'Courier New', monospace;
+            color: #888;
+            word-break: break-all;
+        }
+
+        .url-info strong {
+            color: #00d84f;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+        }
+
+        @media (max-width: 768px) {
+            .header {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 15px;
+            }
+
+            .title {
+                font-size: 20px;
+            }
+
+            .button-group {
+                width: 100%;
+            }
+
+            .button-group button {
+                flex: 1;
+                min-width: 50px;
+            }
+
+            .ticker-selector {
+                width: 100%;
+            }
+
+            .ticker-selector button {
+                flex: 1;
+                min-width: 60px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="title">TickerWatcher - <span>{{ ticker }}</span> Chart</div>
+        </div>
+
+        <div class="controls-section">
+            <!-- Ticker Selector -->
+            <div class="control-group">
+                <label>Select Ticker</label>
+                <div class="ticker-selector">
+                    {% for t in tickers %}
+                    <button class="{% if t == ticker %}active{% endif %}" onclick="window.location.href = '{{ url_for('chart', ticker=t, period=period, grouping=grouping) }}'">{{ t }}</button>
+                    {% endfor %}
+                </div>
+            </div>
+
+            <!-- Period Selector -->
+            <div class="control-group">
+                <label>Time Period</label>
+                <div class="button-group">
+                    {% for p in periods %}
+                    <a href="{{ url_for('chart', ticker=ticker, period=p, grouping=grouping) }}" style="text-decoration: none;">
+                        <button class="{% if p == period %}active{% endif %}">{{ p }}</button>
+                    </a>
+                    {% endfor %}
+                </div>
+            </div>
+
+            <!-- Grouping Selector -->
+            <div class="control-group">
+                <label>Chart Grouping</label>
+                <select onchange="window.location.href = '{{ url_for('chart', ticker=ticker, period=period) }}' + '&grouping=' + this.value">
+                    {% for g in groupings %}
+                    <option value="{{ g }}" {% if g == grouping %}selected{% endif %}>{{ g | capitalize }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+        </div>
+
+        <!-- Chart Display -->
+        <div class="chart-container">
+            <img src="{{ url_for('serve_image', filename=chart_file) }}" alt="Chart for {{ ticker }}">
+            <div class="chart-info">
+                Chart for {{ ticker }} • {{ period }} • {{ grouping | capitalize }}
+                <div class="url-info">
+                    <strong>Direct URL for automation:</strong><br>
+                    /chart?ticker={{ ticker }}&period={{ period }}&grouping={{ grouping }}
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Highlight active ticker based on URL
+        document.addEventListener('DOMContentLoaded', function() {
+            // Check if page was loaded with new parameters
+            const params = new URLSearchParams(window.location.search);
+            const ticker = params.get('ticker') || '{{ ticker }}';
+            const period = params.get('period') || '{{ period }}';
+            const grouping = params.get('grouping') || '{{ grouping }}';
+
+            // Update URL if parameters were changed
+            if (ticker !== '{{ ticker }}' || period !== '{{ period }}' || grouping !== '{{ grouping }}') {
+                window.location.href = '{{ url_for('chart') }}?ticker=' + ticker + '&period=' + period + '&grouping=' + grouping;
+            }
+        });
+    </script>
+</body>
+</html>
