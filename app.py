@@ -179,15 +179,30 @@ def ensure_chart_exists(ticker, period, grouping='daily', threshold_pct=10.0, fo
     if cache_key not in chart_cache:
         try:
             period_days = get_period_days(period)
-            chart_bytes = draw_chart(
+            result = draw_chart(
                 ticker, period, period_days, grouping,
                 include_forecast=True, forecast_days=forecast_days, threshold_pct=threshold_pct,
                 garch_p=garch_p, garch_q=garch_q, vol_model=vol_model, vol_scale=vol_scale,
                 show_historical=show_historical
             )
+            # Unpack chart bytes, predictions data, and axis metadata
+            if isinstance(result, tuple):
+                if len(result) == 3:
+                    chart_bytes, predictions_data, chart_meta = result
+                elif len(result) == 2:
+                    chart_bytes, predictions_data = result
+                    chart_meta = {}
+                else:
+                    chart_bytes, predictions_data, chart_meta = result[0], [], {}
+            else:
+                chart_bytes, predictions_data, chart_meta = result, [], {}
             chart_cache[cache_key] = chart_bytes
-            # Also cache the data for tooltips
-            chart_data_cache[cache_key] = get_chart_data_for_tooltip(ticker, period_days)
+            # Also cache the data for tooltips, predictions, and axis metadata
+            chart_data_cache[cache_key] = {
+                'ohlcv': get_chart_data_for_tooltip(ticker, period_days),
+                'predictions': predictions_data,
+                'meta': chart_meta
+            }
         except Exception as e:
             print(f"Error generating chart: {e}")
             return None
@@ -395,11 +410,20 @@ def api_garch_stats(ticker):
 
 @app.route('/api/chart-data/<chart_key>')
 def api_chart_data(chart_key):
-    """Get OHLC data for chart tooltips."""
+    """Get OHLC data for chart tooltips and prediction data."""
     if chart_key not in chart_data_cache:
         return {'error': 'Chart data not found'}, 404
 
-    return {'data': chart_data_cache[chart_key]}
+    cached_data = chart_data_cache[chart_key]
+    # Handle both old format (list) and new format (dict)
+    if isinstance(cached_data, dict):
+        return {
+            'data': cached_data.get('ohlcv', []),
+            'predictions': cached_data.get('predictions', []),
+            'meta': cached_data.get('meta', {})
+        }
+    else:
+        return {'data': cached_data, 'predictions': [], 'meta': {}}
 
 
 @app.route('/api/refresh', methods=['POST'])

@@ -50,91 +50,156 @@ def get_ticker_data(ticker, period_days):
     return dates, opens, highs, lows, closes, volumes
 
 
-def compute_historical_predictions(ticker, dates, closes, garch_p, garch_q, vol_model, step=None):
-    """Compute rolling window predictions for historical data.
+def compute_historical_predictions(ticker, dates, closes, garch_p, garch_q, vol_model, vol_scale=0.8, step=None):
+    """Compute per-day OHLC prediction candles covering the ENTIRE displayed
+    historical period (not just a sparse sample), so the overlay spans the same
+    left-to-right range as the main chart — plus a smoothed trend line derived
+    from the same data.
 
-    For validation: shows what the model would have predicted at each point in the past.
-    Dynamically adjusts step size based on data length for optimal coverage.
+    Efficiency approach: fitting GARCH fresh for every single day would be far too
+    slow for long periods, so instead we fit once per "window" of `step` days and
+    use that single fit's multi-step forecast (horizon=step) to derive a predicted
+    close + per-day volatility for every day inside the window.
+
+    Each window's price path is re-anchored to the ACTUAL close at that window's
+    start. This keeps predictions bounded/accurate (a version that never re-anchors
+    compounds drift error unboundedly over a long period and can wander far off the
+    visible price range) — but it does produce a visible jump at every window
+    boundary if you only look at raw closes ("stair" pattern). The candlesticks
+    show this raw, honest per-window data; the additional smoothed line (moving
+    average over the same closes) gives a continuous trend to eyeball at a glance.
 
     Args:
         ticker: Stock ticker
-        dates: List of date strings
-        closes: List of closing prices
+        dates: List of date strings (aligned with `closes`)
+        closes: List of closing prices (the actual historical data being charted)
         garch_p, garch_q: GARCH model order
         vol_model: 'garch' or 'egarch'
-        step: Compute predictions every N days (auto-calculated if None)
+        vol_scale: Calibration multiplier applied to predicted volatility (matches
+            the same factor used for the forward forecast, for a fair comparison)
+        step: Days per fit window (auto-calculated if None)
 
     Returns:
-        List of (date_index, predicted_price) tuples for historical dates
+        dict with:
+          'candles': list of {'index', 'open', 'high', 'low', 'close'} — one per
+              historical day that could be predicted, full displayed range
+          'line': list of {'index', 'close'} — smoothed version of the same closes
     """
     import sqlite3
-    from datetime import datetime, timedelta
 
-    predictions = []
+    raw_candles = []
+    n = len(closes)
 
-    if len(closes) < 50:  # Need enough data to fit GARCH (lowered for short periods like 1M)
-        return predictions
+    # Minimum rows required for a usable GARCH fit (checked per-window against the DB,
+    # which typically holds years of history before the displayed period even starts —
+    # see config.py MIN_YEARS — so this does NOT limit how far back predictions can begin
+    # within the displayed chart itself).
+    min_train = 50
+    empty_result = {'candles': [], 'line': []}
+    if n < 2:
+        return empty_result
 
-    # Auto-calculate step size based on data length
-    # More data = can use larger step for efficiency
-    # Less data = use smaller step to show more predictions
+    # Auto-calculate step (fit-window size) based on total days to keep cost reasonable.
     if step is None:
-        if len(closes) < 100:
-            step = 1
-        elif len(closes) < 200:
-            step = 2
-        elif len(closes) < 500:
+        if n <= 80:
             step = 3
+        elif n <= 200:
+            step = 5
+        elif n <= 500:
+            step = 8
         else:
-            step = 7
+            step = 15
 
     try:
-        from garch_model import fit_garch
+        from arch import arch_model
     except ImportError:
-        return predictions
+        return empty_result
 
-    # Compute predictions starting from the end and working backwards
-    # Ensure we cover the entire chart from left to right
-    start_idx = len(closes) - 1
-    end_idx = max(50, min(100, len(closes) // 3))  # Leave some margin on left
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
 
-    for idx in range(start_idx, end_idx - 1, -step):
+    # Walk forward from the very first displayed day to the most recent, fitting
+    # once per window and re-anchoring the price path to the actual close at each
+    # window's start (bounded/accurate).
+    w_start = 0
+    prev_close_for_open = closes[0]
+
+    while w_start < n - 1:
+        window_len = min(step, n - 1 - w_start)
+        cutoff_date = dates[w_start]
+
         try:
-            # Fit GARCH on data up to this point
-            # Fetch historical returns up to this date
-            cutoff_date = dates[idx]
-            conn = sqlite3.connect(DB_PATH)
-            cursor = conn.cursor()
             cursor.execute('''
                 SELECT date, close FROM prices
                 WHERE ticker = ? AND date <= ?
-                ORDER BY date DESC LIMIT 252
+                ORDER BY date DESC LIMIT 1825
             ''', (ticker, cutoff_date))
             rows = cursor.fetchall()
-            conn.close()
 
-            if len(rows) < 50:
+            if len(rows) < min_train:
+                w_start += window_len
                 continue
 
             train_closes = np.array([float(r[1]) for r in reversed(rows)])
             train_returns = np.diff(np.log(train_closes)) * 100
 
-            # Quick fit
-            from arch import arch_model
             model = arch_model(train_returns, vol='Garch' if vol_model.lower() == 'garch' else 'EGARCH',
-                             p=garch_p, q=garch_q)
+                                p=garch_p, q=garch_q)
             fitted = model.fit(disp='off')
 
-            # Predict next day's close using drift
-            last_close = train_closes[-1]
+            forecast_method = 'simulation' if vol_model.lower() == 'egarch' else 'analytic'
+            forecast = fitted.forecast(horizon=window_len, method=forecast_method, reindex=False)
+            variance_forecast = forecast.variance.values[-1, :] if hasattr(forecast.variance, 'values') else forecast.variance[-1, :]
+            day_vols = (np.sqrt(variance_forecast) / 100) * vol_scale  # fraction, calibrated
+
             drift = float(np.mean(train_returns)) / 100
-            next_day_pred = last_close * (1 + drift)
+            running_close = train_closes[-1]  # actual close at w_start — re-anchor each window
 
-            predictions.append((idx, next_day_pred))
+            for day_offset in range(1, window_len + 1):
+                idx = w_start + day_offset
+                if idx >= n:
+                    break
+
+                day_vol = day_vols[day_offset - 1] if (day_offset - 1) < len(day_vols) else day_vols[-1]
+                predicted_close = running_close * (1 + drift)
+
+                o = prev_close_for_open
+                c = predicted_close
+                spread = day_vol * predicted_close * 0.6
+                h = max(o, c) + spread
+                l = min(o, c) - spread
+
+                raw_candles.append({'index': idx, 'open': float(o), 'high': float(h),
+                                     'low': float(l), 'close': float(c)})
+
+                running_close = predicted_close
+                prev_close_for_open = predicted_close
         except Exception:
-            continue
+            pass
 
-    return predictions
+        w_start += window_len
+
+    conn.close()
+
+    if not raw_candles:
+        return empty_result
+
+    # Smoothed trend line: moving average over the raw predicted closes, erasing
+    # the window-boundary jumps while staying close to the underlying values.
+    # A wider window (and a second smoothing pass) makes the curve noticeably smoother.
+    smooth_window = max(5, min(step * 2, 15))
+    raw_closes = np.array([c['close'] for c in raw_candles])
+    kernel = np.ones(smooth_window) / smooth_window
+    padded = np.pad(raw_closes, (smooth_window // 2, smooth_window // 2), mode='edge')
+    smoothed_closes = np.convolve(padded, kernel, mode='valid')[:len(raw_closes)]
+    # Second pass with a smaller kernel to further round off any remaining kinks
+    padded2 = np.pad(smoothed_closes, (2, 2), mode='edge')
+    smoothed_closes = np.convolve(padded2, np.ones(5) / 5, mode='valid')[:len(raw_closes)]
+
+    line = [{'index': raw_candles[i]['index'], 'close': float(smoothed_closes[i])}
+            for i in range(len(raw_candles))]
+
+    return {'candles': raw_candles, 'line': line}
 
 
 def get_price_stats(opens, highs, lows, closes, volumes):
@@ -345,6 +410,7 @@ def draw_chart(ticker, period_name, period_days, grouping='daily', include_forec
     # Plot forecasted candlesticks (future predictions)
     forecast_highs = []
     forecast_lows = []
+    forecast_ohlc_by_index = {}  # index -> {open, high, low, close}, for tooltip lookup
     if forecast_data and 'closes' in forecast_data and len(forecast_data['closes']) > 0:
         forecast_closes = forecast_data['closes']
         forecast_dates = forecast_data['dates']
@@ -379,20 +445,22 @@ def draw_chart(ticker, period_name, period_days, grouping='daily', include_forec
             l = min(l, min(o, c))
             forecast_highs.append(h)
             forecast_lows.append(l)
+            forecast_ohlc_by_index[i] = {'open': float(o), 'high': float(h), 'low': float(l), 'close': float(c),
+                                          'date': forecast_dates[idx] if idx < len(forecast_dates) else None}
 
-            # Color based on up/down
-            color_forecast = '#00d84f' if c >= o else '#ff3333'
-            # Make forecast colors more transparent (lighter shade)
-            alpha_color = '#66ff99' if c >= o else '#ff7777'
+            # Forecast candles are all blue — same color family as the historical
+            # prediction overlay, since both represent "model prediction" rather than
+            # real observed data (distinct from real green/red actual candlesticks)
+            forecast_color = '#4a90e2'
 
             # Draw wick (high-low line)
-            ax_chart.plot([i, i], [l, h], color=alpha_color, linewidth=0.8, alpha=0.6)
+            ax_chart.plot([i, i], [l, h], color=forecast_color, linewidth=0.8, alpha=0.6)
 
             # Draw body (open-close rectangle) with dashed outline
             body_top = max(o, c)
             body_bottom = min(o, c)
             rect = Rectangle((i - width/2, body_bottom), width, body_top - body_bottom,
-                             facecolor=alpha_color, edgecolor=alpha_color, linewidth=0.5,
+                             facecolor=forecast_color, edgecolor=forecast_color, linewidth=0.5,
                              alpha=0.4, linestyle='--')
             ax_chart.add_patch(rect)
 
@@ -403,25 +471,88 @@ def draw_chart(ticker, period_name, period_days, grouping='daily', include_forec
                   transform=ax_chart.transAxes, va='top',
                   bbox=dict(boxstyle='round,pad=0.5', facecolor='#222222', edgecolor='#444444', alpha=0.8))
 
-    # Crosshair on last candle
+    # "Today" separator: the boundary between real historical data and forecast.
+    # Positioned just past the RIGHT EDGE of the last historical candle's body
+    # (not through its center) so that candle sits entirely on the historical side —
+    # everything left of this line is real data, everything right is prediction only.
     last_i = len(dates) - 1
-    ax_chart.plot([last_i, last_i], [ax_chart.get_ylim()[0], ax_chart.get_ylim()[1]],
-                  color='#666666', linewidth=1, linestyle='--', alpha=0.5)
+    today_x = last_i + width / 2 + 0.05
+    ax_chart.plot([today_x, today_x], [ax_chart.get_ylim()[0], ax_chart.get_ylim()[1]],
+                  color='#888888', linewidth=1.2, linestyle='--', alpha=0.6)
     ax_chart.plot([ax_chart.get_xlim()[0], ax_chart.get_xlim()[1]], [closes[-1], closes[-1]],
                   color='#666666', linewidth=1, linestyle='--', alpha=0.5)
 
-    # Historical predictions overlay (blue line showing past model predictions)
+    # Historical predictions overlay: blue candlesticks (raw per-day OHLC prediction)
+    # PLUS a green dotted trend line (smoothed), covering the entire displayed period —
+    # same left-to-right range as the real data.
     historical_predictions = []
+    pred_highs = []
+    pred_lows = []
     if show_historical and len(dates) > 50:
         try:
-            hist_preds = compute_historical_predictions(ticker, dates, closes, garch_p, garch_q, vol_model)
-            if hist_preds:
-                pred_indices = [idx for idx, _ in hist_preds]
-                pred_prices = [price for _, price in hist_preds]
-                # Store predictions for tooltip display (embedded in chart image)
-                historical_predictions = [(dates[idx] if idx < len(dates) else f"idx_{idx}", price) for idx, price in hist_preds]
-                ax_chart.plot(pred_indices, pred_prices, color='#1e90ff', linewidth=2, alpha=0.7, label='Model Predictions', linestyle='--', marker='o', markersize=3)
-                ax_chart.legend(loc='lower right', fontsize=9, framealpha=0.85)
+            hist_result = compute_historical_predictions(ticker, dates, closes, garch_p, garch_q, vol_model, vol_scale=vol_scale)
+            hist_candles = hist_result.get('candles', [])
+            hist_line = hist_result.get('line', [])
+
+            if hist_candles:
+                pred_width = width * 0.9  # slightly narrower than actual candles so both are visible when overlapping
+                for pred in hist_candles:
+                    idx, o, h, l, c = pred['index'], pred['open'], pred['high'], pred['low'], pred['close']
+                    pred_highs.append(h)
+                    pred_lows.append(l)
+
+                    # Blue, semi-transparent — visually distinct from actual (green/red) and
+                    # future forecast (light green/red) candles
+                    ax_chart.plot([idx, idx], [l, h], color='#4a90e2', linewidth=0.9, alpha=0.55, zorder=3)
+                    body_top = max(o, c)
+                    body_bottom = min(o, c)
+                    rect = Rectangle((idx - pred_width/2, body_bottom), pred_width, max(body_top - body_bottom, 0.01),
+                                      facecolor='#4a90e2', edgecolor='#4a90e2', linewidth=0.4, alpha=0.4, zorder=3)
+                    ax_chart.add_patch(rect)
+
+            forecast_line_points = []  # (index, close) pairs for the forecast-region trend extension
+            if hist_line:
+                line_indices = [p['index'] for p in hist_line]
+                line_closes = [p['close'] for p in hist_line]
+
+                # Continue the trend line into the future forecast region so it connects
+                # seamlessly with the forward forecast instead of stopping at "today".
+                if forecast_data and forecast_data.get('closes'):
+                    for idx, close_price in enumerate(forecast_data['closes']):
+                        f_index = len(dates) + idx + 1
+                        line_indices.append(f_index)
+                        line_closes.append(close_price)
+                        forecast_line_points.append((f_index, close_price))
+
+                pred_highs.append(max(line_closes))
+                pred_lows.append(min(line_closes))
+
+                ax_chart.plot(line_indices, line_closes, color='#4a90e2', linewidth=1.8, alpha=0.9,
+                              linestyle=':', label='Model Predictions (historical)', zorder=4)
+
+            if hist_candles or hist_line or forecast_line_points:
+                # Merge candle OHLC + smoothed close into one lookup dict per index for tooltips.
+                # Historical indices get their predicted OHLC + trend; forecast-region indices
+                # (beyond the "today" boundary) get the actual forecast candle's OHLC + trend.
+                merged = {}
+                for c in hist_candles:
+                    merged[c['index']] = {'index': c['index'], 'open': c['open'], 'high': c['high'],
+                                           'low': c['low'], 'close': c['close']}
+                for p in hist_line:
+                    merged.setdefault(p['index'], {'index': p['index']})['line_close'] = p['close']
+                for f_index, f_close in forecast_line_points:
+                    entry = merged.setdefault(f_index, {'index': f_index})
+                    entry['line_close'] = f_close
+                    if f_index in forecast_ohlc_by_index:
+                        entry.update(forecast_ohlc_by_index[f_index])
+                historical_predictions = list(merged.values())
+
+                # Legend: proxy patch for candles + the actual line handle
+                legend_patch = Rectangle((0, 0), 1, 1, facecolor='#4a90e2', edgecolor='#4a90e2', alpha=0.5)
+                line_handle = plt.Line2D([0], [0], color='#4a90e2', linewidth=1.8, linestyle=':')
+                ax_chart.legend([legend_patch, line_handle],
+                                ['Predicted OHLC (historical)', 'Predicted trend (smoothed)'],
+                                loc='lower right', fontsize=9, framealpha=0.85)
         except Exception:
             pass  # Silently skip if historical predictions fail
 
@@ -431,8 +562,10 @@ def draw_chart(ticker, period_name, period_days, grouping='daily', include_forec
 
     # Y-axis must also account for forecast highs/lows, which can (and often do,
     # now that drift + real volatility are used) extend beyond the historical range
-    y_low = min(lows + forecast_lows) if forecast_lows else min(lows)
-    y_high = max(highs + forecast_highs) if forecast_highs else max(highs)
+    all_lows = lows + forecast_lows + pred_lows
+    all_highs = highs + forecast_highs + pred_highs
+    y_low = min(all_lows)
+    y_high = max(all_highs)
     ax_chart.set_ylim(y_low * 0.98, y_high * 1.02)
     ax_chart.set_ylabel('Price (USD)', color='#888888', fontsize=10)
     ax_chart.tick_params(colors='#666666', labelsize=9)
@@ -505,6 +638,13 @@ def draw_chart(ticker, period_name, period_days, grouping='daily', include_forec
             color_forecast = '#66ff99' if idx % 2 == 0 else '#ff7777'
             ax_volume.bar(i, forecast_vol, color=color_forecast, alpha=0.3, width=0.8)
 
+            # This runs after historical_predictions was already built, so patch the
+            # matching entry (if any) with volume for tooltip display.
+            for entry in historical_predictions:
+                if entry.get('index') == i:
+                    entry['volume'] = float(forecast_vol)
+                    break
+
     ax_volume.set_xlim(-1, x_max)
     ax_volume.set_ylabel('Volume', color='#888888', fontsize=9)
     ax_volume.tick_params(colors='#666666', labelsize=8)
@@ -533,7 +673,12 @@ Avg Volume: {stats['avg_volume']/1e6:.1f}M"""
     img_buffer.seek(0)
     plt.close()
 
-    return img_buffer.getvalue()
+    # Return image bytes, prediction data, and axis metadata for accurate tooltip
+    # hover-to-date mapping (the image includes the forecast region too, so a naive
+    # "pixel fraction of image width = fraction of historical_count" assumption drifts
+    # further off the more forecast_days extends the total plotted width)
+    chart_meta = {'x_min': -1, 'x_max': x_max, 'historical_count': len(dates)}
+    return img_buffer.getvalue(), historical_predictions, chart_meta
 
 
 def main():

@@ -431,8 +431,9 @@
                     <span title="Overlay blue line showing what current settings would have predicted for historical data">Show Historical Predictions</span>
                 </label>
                 <div style="font-size: 9px; color: #666; margin-top: 4px; margin-left: 20px;">
-                    Blue line = model's past predictions<br/>
-                    Candlesticks = actual prices
+                    Blue candles = predicted OHLC<br/>
+                    Blue dotted line = smoothed trend<br/>
+                    Solid candlesticks = actual prices
                 </div>
             </div>
 
@@ -689,6 +690,12 @@
 
         // Chart Tooltip on Hover
         let chartData = [];
+        let predictionsData = [];
+        let chartMeta = null;  // {x_min, x_max, historical_count} — the actual matplotlib axis
+                                // range, which extends beyond historical_count to include the
+                                // forecast region. Without this, hover-to-date mapping assumes
+                                // the whole image width = historical data only, which drifts
+                                // further off the more forecast_days extends the plotted width.
         const chartKey = '{{ chart_key }}';
         const chartImg = document.getElementById('chart-img');
         const chartWrapper = document.getElementById('chart-wrapper');
@@ -701,6 +708,12 @@
                 .then(result => {
                     if (result.data) {
                         chartData = result.data;
+                    }
+                    if (result.predictions) {
+                        predictionsData = result.predictions;
+                    }
+                    if (result.meta && result.meta.x_max !== undefined) {
+                        chartMeta = result.meta;
                     }
                 })
                 .catch(err => console.log('Chart data not available'));
@@ -719,19 +732,35 @@
             const chartWidth = chartImg.offsetWidth;
             const chartStartX = 0;
             const chartEndX = chartWidth;
-
-            // Find the closest data point (approximate)
             const relativeX = (x - chartStartX) / (chartEndX - chartStartX);
-            const dataIndex = Math.round(relativeX * (chartData.length - 1));
+
+            // Map pixel position to the actual matplotlib axis coordinate. The plotted
+            // image spans [x_min, x_max] (which includes the forecast region, not just
+            // historical data) — using chartData.length instead of that full range causes
+            // increasing date drift the larger forecast_days is relative to history length.
+            let dataIndex;
+            if (chartMeta) {
+                const axisPos = chartMeta.x_min + relativeX * (chartMeta.x_max - chartMeta.x_min);
+                dataIndex = Math.round(axisPos);
+            } else {
+                // Fallback for charts generated before this fix (no meta cached yet)
+                dataIndex = Math.round(relativeX * (chartData.length - 1));
+            }
+
+            const showHistoricalCheckbox = document.getElementById('show-historical-predictions');
+            const historicalOn = showHistoricalCheckbox && showHistoricalCheckbox.checked && predictionsData.length > 0;
+            const pred = historicalOn ? predictionsData.find(p => p.index === dataIndex) : null;
+
+            let tooltipHTML = null;
 
             if (dataIndex >= 0 && dataIndex < chartData.length) {
+                // Historic side: real OHLCV (green/red) untouched, plus full predicted
+                // OHLC breakdown (blue) and the smoothed trend value, when available.
                 const data = chartData[dataIndex];
-
-                // Determine if candle is red (down) or green (up)
                 const isRed = data.close < data.open;
                 const colorClass = isRed ? 'red' : 'green';
 
-                let tooltipHTML = `
+                tooltipHTML = `
                     <div class="tooltip-date ${colorClass}">${data.date}</div>
                     <div class="tooltip-row">
                         <span class="tooltip-label">Open</span>
@@ -755,14 +784,84 @@
                     </div>
                 `;
 
-                // Show note about historical predictions if enabled
-                const showHistoricalCheckbox = document.getElementById('show-historical-predictions');
-                if (showHistoricalCheckbox && showHistoricalCheckbox.checked) {
-                    tooltipHTML += `<div class="tooltip-row" style="margin-top: 6px; padding-top: 6px; border-top: 1px solid #444;">
-                        <span style="font-size: 9px; color: #1e90ff;">💙 Blue dashed line = model predictions</span>
-                    </div>`;
+                if (pred) {
+                    let predHTML = '<div class="tooltip-row" style="margin-top: 6px; padding-top: 6px; border-top: 1px solid #444;">';
+                    predHTML += '<span style="font-size: 9px; color: #888;">— Historical Prediction —</span></div>';
+                    if (pred.open !== undefined) {
+                        predHTML += `
+                            <div class="tooltip-row">
+                                <span class="tooltip-label" style="color: #4a90e2;">Pred. Open</span>
+                                <span class="tooltip-value" style="color: #4a90e2;">$${pred.open.toFixed(2)}</span>
+                            </div>
+                            <div class="tooltip-row">
+                                <span class="tooltip-label" style="color: #4a90e2;">Pred. High</span>
+                                <span class="tooltip-value" style="color: #4a90e2;">$${pred.high.toFixed(2)}</span>
+                            </div>
+                            <div class="tooltip-row">
+                                <span class="tooltip-label" style="color: #4a90e2;">Pred. Low</span>
+                                <span class="tooltip-value" style="color: #4a90e2;">$${pred.low.toFixed(2)}</span>
+                            </div>
+                            <div class="tooltip-row">
+                                <span class="tooltip-label" style="color: #4a90e2;">Pred. Close</span>
+                                <span class="tooltip-value" style="color: #4a90e2;">$${pred.close.toFixed(2)}</span>
+                            </div>
+                        `;
+                    }
+                    if (pred.line_close !== undefined) {
+                        predHTML += `
+                            <div class="tooltip-row">
+                                <span class="tooltip-label" style="color: #4a90e2;">Trend (smoothed)</span>
+                                <span class="tooltip-value" style="color: #4a90e2;">$${pred.line_close.toFixed(2)}</span>
+                            </div>
+                        `;
+                    }
+                    tooltipHTML += predHTML;
                 }
+            } else if (pred && pred.line_close !== undefined) {
+                // Forecast side (past "today", no real data): the forecast candle itself
+                // is blue, so its OHLC + the smoothed trend are all shown in blue too —
+                // no green/red block since there's nothing "actual" out here.
+                tooltipHTML = '';
+                if (pred.date) {
+                    tooltipHTML += `<div class="tooltip-date" style="color: #4a90e2;">${pred.date}</div>`;
+                }
+                if (pred.open !== undefined) {
+                    tooltipHTML += `
+                        <div class="tooltip-row">
+                            <span class="tooltip-label" style="color: #4a90e2;">Open</span>
+                            <span class="tooltip-value" style="color: #4a90e2;">$${pred.open.toFixed(2)}</span>
+                        </div>
+                        <div class="tooltip-row">
+                            <span class="tooltip-label" style="color: #4a90e2;">High</span>
+                            <span class="tooltip-value" style="color: #4a90e2;">$${pred.high.toFixed(2)}</span>
+                        </div>
+                        <div class="tooltip-row">
+                            <span class="tooltip-label" style="color: #4a90e2;">Low</span>
+                            <span class="tooltip-value" style="color: #4a90e2;">$${pred.low.toFixed(2)}</span>
+                        </div>
+                        <div class="tooltip-row">
+                            <span class="tooltip-label" style="color: #4a90e2;">Close</span>
+                            <span class="tooltip-value" style="color: #4a90e2;">$${pred.close.toFixed(2)}</span>
+                        </div>
+                    `;
+                    if (pred.volume !== undefined) {
+                        tooltipHTML += `
+                            <div class="tooltip-row">
+                                <span class="tooltip-label" style="color: #4a90e2;">Volume</span>
+                                <span class="tooltip-value" style="color: #4a90e2;">${(pred.volume / 1e6).toFixed(1)}M</span>
+                            </div>
+                        `;
+                    }
+                }
+                tooltipHTML += `
+                    <div class="tooltip-row">
+                        <span class="tooltip-label" style="color: #4a90e2;">Trend (smoothed)</span>
+                        <span class="tooltip-value" style="color: #4a90e2;">$${pred.line_close.toFixed(2)}</span>
+                    </div>
+                `;
+            }
 
+            if (tooltipHTML) {
                 tooltip.innerHTML = tooltipHTML;
                 tooltip.classList.add('show');
 
@@ -778,6 +877,8 @@
                 if (tooltipRect.top < 0) {
                     tooltip.style.top = y + 10 + 'px';
                 }
+            } else {
+                tooltip.classList.remove('show');
             }
         });
 
