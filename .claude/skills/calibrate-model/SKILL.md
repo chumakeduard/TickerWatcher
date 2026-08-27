@@ -31,10 +31,10 @@ User says phrases like:
 
 2. **Computes calibration effectiveness**
    - If vol_scale=0.8 reduces error by >10 percentage points consistently, keeps it as default
-   - If a better scale factor emerges, updates `DEFAULT_VOL_SCALE` in `garch_model.py`
+   - If a better scale factor emerges, updates `DEFAULT_VOL_SCALE` in `garch_config.py`
 
 3. **Updates configuration** (if needed):
-   - Adjusts `DEFAULT_VOL_SCALE` in `garch_model.py`
+   - Adjusts `DEFAULT_VOL_SCALE` in `garch_config.py`
    - Updates documentation in `CLAUDE.md` with new findings
    - Notes any GARCH order (p,q) or vol_model recommendations if discovered
 
@@ -92,7 +92,7 @@ Uses `backtest_garch.py` with:
 - BIC (Bayesian Information Criterion)
 - Lower = better fit
 
-## Backtest Results Summary (Aug 25, 2026)
+## Backtest Results Summary (Aug 26, 2026)
 
 | Ticker | Baseline Error | Calibrated Error | Improvement |
 |---|---|---|---|
@@ -100,11 +100,13 @@ Uses `backtest_garch.py` with:
 | VOO | 62.1% | 41.7% | -20.4 pts |
 | VTI | 60.7% | 40.7% | -20.0 pts |
 | NVDA | 82.5% | 59.4% | -23.1 pts |
-| AAPL | (backtest pending) | | |
-| MSFT | (backtest pending) | | |
-| TSLA | (backtest pending) | | |
+| AAPL | 80.9% | 56.8% | -24.1 pts |
+| MSFT | 75.4% | 59.1% | -16.3 pts |
+| TSLA | 62.7% | 43.5% | -19.2 pts |
 
-**Conclusion:** vol_scale=0.8 consistently reduces volatility forecast error by 10-23 percentage points across all tested tickers. Generalizes well from individual stocks to diversified funds. Set as default.
+**Conclusion:** vol_scale=0.8 consistently reduces volatility forecast error by 9-24 percentage points across all 7 tested tickers (funds and individual stocks alike). Generalizes well. Remains the default.
+
+**Direction accuracy note:** re-running this backtest also reconfirmed direction accuracy sits at ~44-56% across AAPL/MSFT/TSLA — essentially a coin flip, consistent with every previous run. No ticker showed a persistent directional edge from historical-mean drift.
 
 ## Implementation Notes
 
@@ -144,7 +146,8 @@ done
 ## See Also
 
 - `backtest_garch.py` — the walk-forward backtest implementation
-- `garch_model.py` — the volatility forecasting model, containing `DEFAULT_VOL_SCALE`
+- `garch_config.py` — centralized GARCH configuration, containing `DEFAULT_VOL_SCALE` and all other tunable defaults
+- `garch_model.py` — the volatility forecasting model (imports its defaults from `garch_config.py`)
 - `CLAUDE.md` — technical documentation and backtest findings
 - `/chart?vol_scale=0.8` — example chart URL with calibration factor
 

@@ -2,6 +2,8 @@
 
 A comprehensive stock market data collection, visualization, and web interface system for analyzing ticker prices with professional-grade charts.
 
+**Last Updated:** August 26, 2026
+
 ## Features
 
 - 📊 **Professional Chart Generation**: Creates high-quality PNG images with candlestick charts, volume histograms, and financial metrics
@@ -12,6 +14,7 @@ A comprehensive stock market data collection, visualization, and web interface s
 - 🤖 **Automation Ready**: Direct URL support for programmatic access and automation
 - 🔮 **GARCH Forecasting**: Dynamic-length price predictions using the model's actual per-day volatility term structure plus historical drift, trained on 5-year historical data
 - 📈 **Predictive Visualization**: Extended charts showing forecasted candlesticks and volume alongside historical data
+- 🔵 **Historical Predictions Overlay**: Toggle a blue overlay showing what the model would have predicted at each point in the past — predicted OHLC candlesticks + a smoothed trend line, using the same blind random-walk methodology as the real forward forecast (see "Model Calibration & Tuning" below)
 - ⚡ **Volatility Analytics**: Real-time GARCH statistics (current, average, max volatility) + fitted model coefficients
 - 📊 **Model Configurability**: Switch between GARCH orders (1,1)/(1,2)/(2,1)/(2,2) and volatility models (GARCH/EGARCH) from sidebar
 - 🎚️ **Volatility Calibration**: Adjust the vol_scale factor (0.3–1.5×, default 0.8×) to correct for GARCH's systematic over-forecast bias
@@ -25,14 +28,17 @@ TickerWatcher/
 ├── config.py                      # Hardcoded ticker list
 ├── db.py                         # Database operations and data fetching
 ├── refresh.py                    # Data refresh script
-├── draw.py                       # Chart image generation with GARCH forecasts
+├── draw.py                       # Chart image generation with GARCH forecasts + historical predictions overlay
 ├── garch_model.py               # GARCH volatility forecasting model
+├── garch_config.py              # Centralized GARCH configuration (training window, defaults, valid orders/models)
+├── backtest_garch.py            # Walk-forward backtest script for validating model settings
 ├── app.py                        # Flask web application
 ├── templates/
 │   ├── chart_sidebar.html       # Main chart page with sidebar navigation
 │   └── error.html               # Error page
 ├── database/
 │   └── prices.db               # SQLite database
+├── .claude/skills/calibrate-model/SKILL.md  # On-demand calibration backtest skill
 ├── requirements.txt             # Python dependencies
 ├── README.md                    # This file
 └── QUICK_START.md              # Quick start guide
@@ -91,9 +97,10 @@ Output: Generated PNG with GARCH forecasts saved to memory (used by web app)
 
 The chart includes:
 - Historical candlesticks and volume
-- 14-day forecasted candlesticks (lighter colors)
+- 14-day forecasted candlesticks (now solid blue — unified "prediction" color)
 - Forecasted volume bars
-- Vertical dashed line separating historical from predicted data
+- A grey dashed "today" line marking the boundary: real data (max date in DB) strictly left, prediction-only strictly right
+- Optionally (`show_historical=1`), a blue overlay of predicted OHLC candlesticks + a smoothed trend line over the historical portion too, for visually validating model accuracy against real data
 
 ### 3. Web Application
 

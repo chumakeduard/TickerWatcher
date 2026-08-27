@@ -4,6 +4,89 @@ Running log of every bug found, fixed, and feature added, in chronological order
 
 ---
 
+## 2026-08-26 (Historical Predictions Overlay & Config Refactor)
+
+### Feature: Historical Predictions Overlay
+
+Added a toggle ("Show Historical Predictions" checkbox, or `?show_historical=1`) that overlays what the model would have predicted at each point in the past directly on the real candlesticks — a visual complement to `backtest_garch.py`'s numeric output.
+
+**What it draws (all blue, the unified "prediction" color):**
+- Predicted OHLC candlesticks for every historical day, semi-transparent, overlaid on the real candles at the same index
+- A smoothed trend line (dotted) — a moving average over the raw predicted closes — that continues seamlessly across the "today" boundary into the future forecast, so past and future predictions read as one line
+- The future forecast candlesticks (previously light green/red) are now also solid blue, unifying "predicted" styling everywhere
+
+**Files:** `draw.py` (new `compute_historical_predictions()`), `app.py`, `templates/chart_sidebar.html`.
+
+---
+
+### Bug fix: Historical predictions "cheated" using real outcomes
+
+**Symptom:** historical prediction candles looked flat/unrealistic — thin bodies with disproportionately long wicks — visually inconsistent with the future forecast's more naturally-proportioned candles.
+
+**Root cause:** the first implementation computed historical predicted closes with pure deterministic drift compounding (`close = prev_close × (1 + drift)`, no randomness), while the future forecast uses a genuine random walk (`drift + Gaussian shock sized by GARCH volatility`). Since historical drift is tiny, the candle body was nearly flat, and the entire GARCH volatility magnitude got dumped into an oversized wick instead.
+
+**Fix:** `compute_historical_predictions()` now uses the *exact same* random-walk formula as the real forecast — re-anchored to the actual close only at the **start** of each rolling fit window (the one piece of information a walk-forward backtest is allowed to know), then simulated exactly as blindly as the future forecast, using the same OHLC jitter formula (`±0.3×`/`±0.5×` day_vol). Each window's RNG is seeded deterministically on `(ticker, window_start_date)` for reproducibility across reloads.
+
+**File:** `draw.py` (`compute_historical_predictions()`).
+
+---
+
+### Bug fix: "Today" line bled into the last historical candle
+
+**Symptom:** the grey dashed line marking the boundary between real data and prediction-only appeared to run through the middle of the last real candle rather than cleanly separating the two regions.
+
+**Root cause:** the line was drawn at `x = last_i` (the candle's center x-position), so half the candle's body (± half its rendered width) visually crossed to the "prediction" side.
+
+**Fix:** moved the line to `today_x = last_i + width/2 + 0.05` — just past the full right edge of the last candle's body.
+
+**File:** `draw.py`.
+
+---
+
+### Bug fix: Tooltip hover date drifted increasingly off with larger `forecast_days`
+
+**Symptom:** hovering near the "today" boundary on a chart with `forecast_days=30` reported a date almost a month earlier than the actual last date in the database.
+
+**Root cause:** the frontend JS mapped mouse pixel position to a data index assuming the whole chart image width corresponds only to the historical candle count — but the rendered image also includes the forecast region. The larger `forecast_days` is relative to the historical window, the further this assumption drifts.
+
+**Fix:** `draw_chart()` now returns axis metadata (`x_min`, `x_max`, `historical_count`) alongside the image bytes; `/api/chart-data/<chart_key>` exposes it as `meta`; the frontend hover handler now maps pixel position to the true matplotlib axis coordinate using that metadata instead of assuming historical-only width.
+
+**Files:** `draw.py` (`draw_chart()` now returns a 3-tuple), `app.py`, `templates/chart_sidebar.html`.
+
+---
+
+### Feature: Tooltip content — full OHLC + volume + trend on both sides
+
+Restructured the hover tooltip to show, depending on which side of the "today" line is hovered:
+- **Historic side:** real OHLCV in green/red (unchanged) **+** predicted Open/High/Low/Close in blue **+** the smoothed trend value in blue
+- **Forecast side:** date, full predicted Open/High/Low/Close, Volume, and the smoothed trend value — all in blue, no green/red block (nothing "actual" exists out there)
+
+**Files:** `draw.py`, `templates/chart_sidebar.html`.
+
+---
+
+### Refactor: Centralized GARCH configuration (`garch_config.py`)
+
+Extracted all previously-scattered GARCH constants (training window length, valid/default orders, valid/default vol models, vol_scale defaults and bounds, forecast-day-by-period mapping, price-move-threshold bounds) into a single new module, `garch_config.py`. `garch_model.py`, `draw.py`, `app.py`, and `backtest_garch.py` now import from it instead of hardcoding values inline.
+
+**File:** `garch_config.py` (new), plus import updates across `garch_model.py`, `draw.py`, `app.py`, `backtest_garch.py`.
+
+---
+
+### Backtest re-run: filled in pending AAPL/MSFT/TSLA calibration numbers
+
+`calibrate-model` skill's results table had "(backtest pending)" placeholders for AAPL/MSFT/TSLA. Ran the full 36-window walk-forward backtest for all three:
+
+| Ticker | Baseline Error | Calibrated Error | Improvement |
+|---|---|---|---|
+| AAPL | 80.9% | 56.8% | -24.1 pts |
+| MSFT | 75.4% | 59.1% | -16.3 pts |
+| TSLA | 62.7% | 43.5% | -19.2 pts |
+
+Consistent with all previously-tested tickers: vol_scale=0.8 improves volatility forecast accuracy, and direction accuracy remains ~44-56% (coin-flip) across the board.
+
+---
+
 ## 2026-08-26 (Model Calibration & Configurability)
 
 ### Feature: Volatility Calibration Factor (vol_scale)

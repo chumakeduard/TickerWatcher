@@ -75,9 +75,9 @@ August 26, 2026
 | Ticker | Baseline Error | Calibrated Error | Improvement |
 |---|---|---|---|
 | NVDA | 82.5% | 59.4% | -23.1 pts |
-| AAPL | ~75% | ~52% | ~-23 pts |
-| MSFT | ~65% | ~45% | ~-20 pts |
-| TSLA | ~70% | ~48% | ~-22 pts |
+| AAPL | 80.9% | 56.8% | -24.1 pts |
+| MSFT | 75.4% | 59.1% | -16.3 pts |
+| TSLA | 62.7% | 43.5% | -19.2 pts |
 | VDE (energy fund) | 41.1% | 31.5% | -9.6 pts |
 | VOO (S&P 500 fund) | 62.1% | 41.7% | -20.4 pts |
 | VTI (total market fund) | 60.7% | 40.7% | -20.0 pts |
@@ -125,6 +125,35 @@ August 26, 2026
 - Shows: μ (mean), ω (omega/constant), α (alpha/ARCH), β (beta/GARCH), γ (gamma/asymmetry)
 - Helps visualize model behavior and inform p/q order tuning
 - Included in all API responses under `model_info.coefficients`
+
+## Historical Predictions Overlay (Aug 26, 2026)
+
+**Purpose:** Visually validate the model — overlay what the model would have predicted at each point in the *past* on top of the real candlesticks, so accuracy can be eyeballed directly on the chart instead of only via `backtest_garch.py` output.
+
+**UI:** "Show Historical Predictions" checkbox in the "⚙️ Chart Controls" sidebar section. Also settable via `?show_historical=1` query string. Off by default.
+
+**What it draws (all in blue — the unified "this is a model prediction" color, distinct from real green/red candles):**
+1. **Predicted OHLC candlesticks** for every historical day (semi-transparent blue, overlaid directly on the real candle at the same index)
+2. **A smoothed trend line** (blue, dotted) — a moving average over the raw predicted closes, which continues seamlessly across the "today" boundary into the future forecast region too, so past and future predictions read as one continuous line
+3. The **future forecast candlesticks** (previously light green/red) are now **also solid blue**, unifying "predicted" styling on both sides of the boundary
+
+**Key design decision — historical predictions are deliberately blind:** early on, historical predictions used the real historical mean drift with no randomness (a "we already know what happened" shortcut), which produced flat, unrealistic-looking candles. This was corrected: `compute_historical_predictions()` in `draw.py` now uses the **exact same random-walk formula as the real forward forecast** —
+```
+Close(day) = PreviousClose × (1 + Drift) + GaussianShock(0, day_vol × price)
+```
+— re-anchored to the actual close only at the **start** of each rolling fit window (the one thing a walk-forward backtest is allowed to know: "here is today, predict forward blindly from here"), not smoothed/faked using knowledge of what actually happened next. Candle open/high/low use the same jitter formula as the future forecast (`±0.3×`/`±0.5×` day_vol around the close). Each window's RNG is seeded deterministically on `(ticker, window_start_date)` so the same simulated path renders on every reload — mirroring the future forecast's `(ticker, last_date)` seeding.
+
+**Efficiency:** fitting GARCH fresh for every single historical day would be too slow, so the function fits once per rolling window (3–15 days depending on total chart length) and simulates the random walk forward for the whole window from that one fit — this is what the "step" parameter controls.
+
+**"Today" boundary line fix:** the grey dashed vertical line marking the boundary between real data and prediction-only was previously drawn through the *center* of the last real candle (`last_i`), so half that candle's body visually bled across the line. Fixed to `today_x = last_i + width/2 + 0.05` — right after the candle's full body, so real data (max date in DB) is strictly left of the line and prediction-only is strictly right.
+
+**Tooltip hover-mapping bug fix:** the JS tooltip previously mapped mouse-x-position to a data index assuming the whole chart image width corresponds only to the historical candle count — but the image also includes the forecast region. This caused the reported hover date to drift further off the longer `forecast_days` was relative to the historical window (observed: ~1 month off with `forecast_days=30` on a 3M chart). Fixed by having `draw_chart()` return axis metadata (`x_min`, `x_max`, `historical_count`) via `/api/chart-data/<chart_key>`'s new `meta` field, which the frontend now uses to map pixels to the correct index.
+
+**Tooltip content (both sides restructured):**
+- **Historic side:** real OHLCV in green/red (unchanged) **+** predicted Open/High/Low/Close in blue **+** the smoothed trend value in blue
+- **Forecast side (right of "today"):** date, full predicted Open/High/Low/Close, Volume, and the smoothed trend value — all in blue, no green/red block (there's no "actual" data out there)
+
+**Files touched:** `draw.py` (`compute_historical_predictions()`, `draw_chart()` — now returns a 3-tuple `(image_bytes, historical_predictions, chart_meta)`), `app.py` (`ensure_chart_exists()`, `/api/chart-data/<chart_key>` — now also returns `meta`), `templates/chart_sidebar.html` (checkbox, tooltip JS).
 
 ## Architecture Overview
 
@@ -334,7 +363,7 @@ if model is None:
 
 ```python
 def draw_chart(ticker, period_name, period_days, grouping='daily', include_forecast=True, forecast_days=14,
-                threshold_pct=10.0, garch_p=1, garch_q=1, vol_model='garch', vol_scale=0.8):
+                threshold_pct=10.0, garch_p=1, garch_q=1, vol_model='garch', vol_scale=0.8, show_historical=False):
     """
     Generate professional stock chart with GARCH forecasts
     
@@ -344,14 +373,19 @@ def draw_chart(ticker, period_name, period_days, grouping='daily', include_forec
         garch_p, garch_q: GARCH model order (default (1,1))
         vol_model: 'garch' (default) or 'egarch'
         vol_scale: Volatility calibration multiplier (default 0.8)
+        show_historical: If True, overlay blue predicted OHLC candles + smoothed
+            trend line over historical data (see "Historical Predictions Overlay")
     
     Key features:
     - Plots historical candlesticks with proper OHLC
-    - Generates forecast candlesticks using calibrated GARCH volatility
+    - Generates forecast candlesticks (blue) using calibrated GARCH volatility
     - Shows forecast volume bars (semi-transparent)
     - Marks significant price moves (threshold configurable)
     - Extends x-axis to accommodate forecast periods
-    - Returns PNG bytes for in-memory caching
+    - Optionally overlays historical prediction candles + smoothed trend line
+    - Returns (PNG bytes, historical_predictions list, chart_meta dict) — a 3-tuple,
+      not just bytes; chart_meta carries {x_min, x_max, historical_count} for
+      accurate tooltip hover-to-date mapping in the frontend
     """
 ```
 
@@ -711,11 +745,13 @@ done
 
 1. **Bollinger Bands** around forecast (volatility envelope)
 2. **Prediction Confidence** intervals (wider = less confident)
-3. **Model Accuracy Metrics** (AIC/BIC comparison)
-4. **Alternative Models** (ARCH, EMA, ARIMA)
-5. **User Configuration** (forecast days, historical window)
-6. **Export Forecasts** as CSV/JSON
-7. **Backtesting** tool (compare historical forecast to actual)
+3. **Alternative Models** (GJR-GARCH as a more stable asymmetric option than EGARCH)
+4. **Export Forecasts** as CSV/JSON
+5. **Drift damping** — taper drift to zero over longer forecast horizons (direction accuracy is ~50%/coin-flip at every tested horizon, so the drift term's contribution is questionable for multi-week forecasts)
+6. **QLIKE loss metric** in `backtest_garch.py` — more statistically robust than mean % error for small-sample volatility-forecast validation
+7. **Ticker-specific or regime-adaptive vol_scale** — backtesting found funds need less correction (9-20pt improvement) than individual stocks (20-23pt) with the same global 0.8× factor
+
+(Already built, no longer "future": walk-forward backtesting tool — see `backtest_garch.py` and the `calibrate-model` skill; Model Accuracy Metrics via AIC/BIC comparison — see fitted-coefficients stats panel.)
 
 ## Dependencies and Versions
 
@@ -740,12 +776,15 @@ pip install flask matplotlib yfinance pandas numpy arch
 
 ### Created
 - `garch_model.py` - GARCH forecasting module
+- `garch_config.py` - Centralized GARCH configuration (training window, valid orders/models, vol_scale defaults, forecast-day mapping, thresholds)
+- `backtest_garch.py` - Walk-forward backtest script (validates model settings across tickers)
 - `templates/chart_sidebar.html` - New sidebar UI
 - `database/` - Directory for database file
+- `.claude/skills/calibrate-model/SKILL.md` - Project skill for running calibration backtests on demand
 
 ### Modified
-- `app.py` - Added GARCH endpoints, cache management
-- `draw.py` - Added forecast visualization
+- `app.py` - Added GARCH endpoints, cache management, axis metadata passthrough for tooltip accuracy
+- `draw.py` - Added forecast visualization, historical predictions overlay (`compute_historical_predictions()`), unified random-walk methodology for historic + future predictions, "today" boundary line
 - `README.md` - Updated documentation
 - `requirements.txt` - Added arch library
 
@@ -802,6 +841,6 @@ DEBUG=False         # Disable debug mode
 
 ---
 
-**Last Updated:** August 25, 2026  
+**Last Updated:** August 26, 2026  
 **Implemented By:** Claude Code Assistant  
 **Status:** Production Ready for Personal Use
