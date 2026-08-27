@@ -18,7 +18,10 @@ from garch_config import (
     FORECAST_DAYS_BY_PERIOD,
     DEFAULT_PRICE_MOVE_THRESHOLD,
     MIN_PRICE_MOVE_THRESHOLD,
-    MAX_PRICE_MOVE_THRESHOLD
+    MAX_PRICE_MOVE_THRESHOLD,
+    DEFAULT_PROFIT_PCT,
+    MIN_PROFIT_PCT,
+    MAX_PROFIT_PCT
 )
 
 app = Flask(__name__)
@@ -73,14 +76,15 @@ def _run_refresh():
 
 
 def get_chart_key(ticker, period, grouping, threshold_pct=10.0, forecast_days=None, garch_p=1, garch_q=1,
-                   vol_model='garch', vol_scale=0.8, show_historical=False):
+                   vol_model='garch', vol_scale=0.8, show_historical=False, profit_pct=10.0, show_signals=False):
     """Generate cache key for chart, including parameters that affect rendering."""
     if forecast_days is None:
         forecast_days = get_forecast_days(period)
-    # Include threshold, forecast_days, GARCH order, vol_model, vol_scale, and show_historical
+    # Include threshold, forecast_days, profit_pct, GARCH order, vol_model, vol_scale, show_historical, and show_signals
     # in the key so cache doesn't serve a stale chart when only these params change
     hist_suffix = "_hist" if show_historical else ""
-    return f"{ticker}_{period.lower()}_{grouping}_th{threshold_pct:.1f}_fd{forecast_days}_p{garch_p}q{garch_q}_{vol_model}_vs{vol_scale:.2f}{hist_suffix}"
+    sig_suffix = "_sig" if show_signals else ""
+    return f"{ticker}_{period.lower()}_{grouping}_th{threshold_pct:.1f}_fd{forecast_days}_pr{profit_pct:.1f}_p{garch_p}q{garch_q}_{vol_model}_vs{vol_scale:.2f}{hist_suffix}{sig_suffix}"
 
 
 def get_garch_order(p_val, q_val):
@@ -152,7 +156,8 @@ def get_chart_data_for_tooltip(ticker, period_days):
 
 
 def ensure_chart_exists(ticker, period, grouping='daily', threshold_pct=10.0, forecast_days_override=None,
-                         garch_p=1, garch_q=1, vol_model='garch', vol_scale=0.8, show_historical=False):
+                         garch_p=1, garch_q=1, vol_model='garch', vol_scale=0.8, show_historical=False, profit_pct=10.0,
+                         show_signals=False):
     """Generate and cache chart if it doesn't exist in cache.
 
     Args:
@@ -161,6 +166,8 @@ def ensure_chart_exists(ticker, period, grouping='daily', threshold_pct=10.0, fo
         vol_model: 'garch' (default) or 'egarch'
         vol_scale: volatility calibration multiplier (default 0.8, see get_vol_scale())
         show_historical: If True, overlay historical predictions on the chart
+        profit_pct: Profit target % for marking forecast candles that hit targets
+        show_signals: If True, show buy/sell signals on all forecast candles
     """
     # Determine the actual forecast_days to use
     forecast_days = forecast_days_override
@@ -174,7 +181,7 @@ def ensure_chart_exists(ticker, period, grouping='daily', threshold_pct=10.0, fo
 
     cache_key = get_chart_key(ticker, period, grouping, threshold_pct=threshold_pct, forecast_days=forecast_days,
                                garch_p=garch_p, garch_q=garch_q, vol_model=vol_model, vol_scale=vol_scale,
-                               show_historical=show_historical)
+                               show_historical=show_historical, profit_pct=profit_pct, show_signals=show_signals)
 
     if cache_key not in chart_cache:
         try:
@@ -183,7 +190,7 @@ def ensure_chart_exists(ticker, period, grouping='daily', threshold_pct=10.0, fo
                 ticker, period, period_days, grouping,
                 include_forecast=True, forecast_days=forecast_days, threshold_pct=threshold_pct,
                 garch_p=garch_p, garch_q=garch_q, vol_model=vol_model, vol_scale=vol_scale,
-                show_historical=show_historical
+                show_historical=show_historical, profit_pct=profit_pct, show_signals=show_signals
             )
             # Unpack chart bytes, predictions data, and axis metadata
             if isinstance(result, tuple):
@@ -260,6 +267,15 @@ def get_threshold_pct(query_val):
         return 10.0
 
 
+def get_profit_pct(query_val):
+    """Parse profit target percentage from query string (default 10)."""
+    try:
+        val = float(query_val) if query_val else DEFAULT_PROFIT_PCT
+        return max(MIN_PROFIT_PCT, min(MAX_PROFIT_PCT, val))  # Clamp to configured range
+    except (ValueError, TypeError):
+        return DEFAULT_PROFIT_PCT
+
+
 @app.route('/')
 def index():
     """Home page - redirect to first ticker."""
@@ -274,10 +290,12 @@ def chart():
     grouping = 'daily'  # Always use daily grouping
     threshold_pct = get_threshold_pct(request.args.get('threshold', '10'))
     forecast_days_override = request.args.get('forecast_days')
+    profit_pct = get_profit_pct(request.args.get('profit_pct'))
     garch_p, garch_q = get_garch_order(request.args.get('garch_p'), request.args.get('garch_q'))
     vol_model = get_vol_model(request.args.get('vol_model'))
     vol_scale = get_vol_scale(request.args.get('vol_scale'))
     show_historical = request.args.get('show_historical', '0') == '1'
+    show_signals = request.args.get('show_signals', '0') == '1'
 
     # Validate inputs
     if ticker not in TICKERS:
@@ -294,11 +312,11 @@ def chart():
     else:
         effective_forecast_days = get_forecast_days(period)
 
-    # Ensure chart exists in cache, passing threshold, forecast_days, and GARCH model settings
+    # Ensure chart exists in cache, passing threshold, forecast_days, profit_pct, show_signals, and GARCH model settings
     chart_key = ensure_chart_exists(ticker, period, grouping, threshold_pct=threshold_pct,
                                    forecast_days_override=forecast_days_override,
                                    garch_p=garch_p, garch_q=garch_q, vol_model=vol_model, vol_scale=vol_scale,
-                                   show_historical=show_historical)
+                                   show_historical=show_historical, profit_pct=profit_pct, show_signals=show_signals)
 
     if not chart_key:
         error_msg = f"Could not generate chart for {ticker}"
@@ -313,11 +331,13 @@ def chart():
                           threshold_pct=threshold_pct,
                           forecast_days_override=forecast_days_override,
                           effective_forecast_days=effective_forecast_days,
+                          profit_pct=profit_pct,
                           garch_p=garch_p,
                           garch_q=garch_q,
                           vol_model=vol_model,
                           vol_scale=vol_scale,
                           show_historical=show_historical,
+                          show_signals=show_signals,
                           valid_orders=VALID_GARCH_ORDERS)
 
 

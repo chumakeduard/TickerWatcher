@@ -5,7 +5,7 @@ This document provides detailed technical information about the TickerWatcher ap
 📋 **For a running log of every bug found and fixed, see [CHANGELOG.md](CHANGELOG.md).**
 
 ## Last Updated
-August 26, 2026
+August 26, 2026 (Buy/Sell Signals & Profit Targets)
 
 ## Current Status
 
@@ -20,7 +20,7 @@ August 26, 2026
 - Forecast volume visualization
 - Grouping selector removed from UI
 - Interactive tooltips for historical data
-- In-memory chart caching (includes all chart parameters in cache key: threshold, forecast_days, garch_p, garch_q, vol_model, vol_scale)
+- In-memory chart caching (includes all chart parameters in cache key: threshold, forecast_days, profit_pct, garch_p, garch_q, vol_model, vol_scale, show_signals)
 - Intelligent prediction scaling (short periods = short forecasts)
 - Forecasts use per-day GARCH volatility term structure + historical drift
 - One-click data refresh button in sidebar
@@ -39,6 +39,22 @@ August 26, 2026
   - Shows μ (mu, mean), ω (omega, const), α (alpha, ARCH), β (beta, GARCH), γ (gamma, asymmetry in EGARCH)
   - Displayed below volatility metrics, AIC/BIC
   - Helps understand model behavior and tune orders
+- **Profit Target Marking** (Aug 26, 2026)
+  - Slider: Profit % target (default 10%, range 0.1-50%)
+  - Horizontal dashed lines show profit target prices (upside & downside)
+  - Marks first forecast candle reaching ±profit_pct from last close
+  - Green lines/labels for upside profit (sell opportunity)
+  - Red lines/labels for downside profit (short/buy opportunity)
+  - Settable via URL query string (?profit_pct=X)
+- **Buy/Sell Trading Signals** (Aug 26, 2026)
+  - Checkbox: "Show Buy/Sell Signals" (off by default)
+  - Strict alternating cycle: BUY → SELL → BUY → SELL...
+  - Each signal achieves the configured profit % target
+  - Green "BUY" labels when price drops ≥profit_pct
+  - Red "SELL" labels when price rises ≥profit_pct (shows actual profit achieved)
+  - Labels include date, price, and profit % on each signal
+  - Positioned above candles (SELL, green) or below (BUY, red) for clarity
+  - Settable via URL query string (?show_signals=1)
 
 ## Forecast Logic Bug Fix (Aug 26, 2026)
 

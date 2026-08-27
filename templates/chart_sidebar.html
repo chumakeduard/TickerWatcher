@@ -424,6 +424,33 @@
                 </div>
             </div>
 
+            <!-- Profit % Target -->
+            <div style="margin-bottom: 12px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                    <label style="font-size: 11px; color: #888;" title="Mark forecast candles where profit target is hit">Profit % Target</label>
+                    <span id="profit-value" style="font-size: 11px; color: #00d84f; font-weight: 600;">{{ profit_pct }}%</span>
+                </div>
+                <input type="range" id="profit-slider" value="{{ profit_pct }}" min="0.1" max="50" step="0.5"
+                       style="width: 100%; cursor: pointer; accent-color: #00d84f;"
+                       oninput="document.getElementById('profit-value').textContent = this.value + '%';">
+                <div style="font-size: 10px; color: #666; margin-top: 4px; display: flex; justify-content: space-between;">
+                    <span>0.1%</span><span>10% default</span><span>50%</span>
+                </div>
+            </div>
+
+            <!-- Show Buy/Sell Signals -->
+            <div style="margin-bottom: 12px;">
+                <label style="display: flex; align-items: center; font-size: 11px; color: #888; cursor: pointer;">
+                    <input type="checkbox" id="show-buy-sell-signals" {% if show_signals %}checked{% endif %} style="margin-right: 6px; cursor: pointer;" />
+                    <span title="Show buy/sell decision points on forecast candlesticks">Show Buy/Sell Signals</span>
+                </label>
+                <div style="font-size: 9px; color: #666; margin-top: 4px; margin-left: 20px;">
+                    Green = Buy (uptrend)<br/>
+                    Red = Sell (downtrend)<br/>
+                    With date and price
+                </div>
+            </div>
+
             <!-- Show Historical Predictions -->
             <div style="margin-bottom: 12px;">
                 <label style="display: flex; align-items: center; font-size: 11px; color: #888; cursor: pointer;">
@@ -448,7 +475,7 @@
             <div class="sidebar-title">📊 Tickers</div>
             <div class="ticker-list">
                 {% for t in tickers %}
-                <a href="{{ url_for('chart', ticker=t, period=period, threshold=threshold_pct, forecast_days=effective_forecast_days, garch_p=garch_p, garch_q=garch_q, vol_model=vol_model, vol_scale=vol_scale) }}" class="ticker-item {% if t == ticker %}active{% endif %}">
+                <a href="{{ url_for('chart', ticker=t, period=period, threshold=threshold_pct, forecast_days=effective_forecast_days, profit_pct=profit_pct, garch_p=garch_p, garch_q=garch_q, vol_model=vol_model, vol_scale=vol_scale) }}" class="ticker-item {% if t == ticker %}active{% endif %}">
                     {{ t }}
                 </a>
                 {% endfor %}
@@ -460,7 +487,7 @@
             <div class="sidebar-title">📅 Time Period</div>
             <div class="button-group">
                 {% for p in periods %}
-                <button class="selector-btn {% if p == period %}active{% endif %}" onclick="window.location.href = '{{ url_for('chart', ticker=ticker, period=p, threshold=threshold_pct, forecast_days=effective_forecast_days, garch_p=garch_p, garch_q=garch_q, vol_model=vol_model, vol_scale=vol_scale) }}'">{{ p }}</button>
+                <button class="selector-btn {% if p == period %}active{% endif %}" onclick="window.location.href = '{{ url_for('chart', ticker=ticker, period=p, threshold=threshold_pct, forecast_days=effective_forecast_days, profit_pct=profit_pct, garch_p=garch_p, garch_q=garch_q, vol_model=vol_model, vol_scale=vol_scale) }}'">{{ p }}</button>
                 {% endfor %}
             </div>
         </div>
@@ -514,23 +541,27 @@
             window.location.href = '{{ url_for('chart') }}?' + params.toString();
         }
 
-        // Apply chart control changes (forecast days, GARCH order, vol model, vol calibration; threshold uses slider)
+        // Apply chart control changes (forecast days, GARCH order, vol model, vol calibration, profit %; threshold uses slider)
         function applyChartControls() {
             const forecastDays = parseInt(document.getElementById('forecast-input').value) || 14;
             const threshold = parseFloat(document.getElementById('threshold-slider').value) || 10;
+            const profit = parseFloat(document.getElementById('profit-slider').value) || 10;
             const [garchP, garchQ] = document.getElementById('garch-order-select').value.split(',');
             const volModel = document.getElementById('vol-model-select').value;
             const volScale = parseFloat(document.getElementById('vol-scale-slider').value) || 0.8;
             const showHistoricalPredictions = document.getElementById('show-historical-predictions').checked ? '1' : '0';
+            const showBuySellSignals = document.getElementById('show-buy-sell-signals').checked ? '1' : '0';
             const params = new URLSearchParams(window.location.search);
 
             params.set('threshold', threshold);
             params.set('forecast_days', forecastDays);
+            params.set('profit_pct', profit);
             params.set('garch_p', garchP);
             params.set('garch_q', garchQ);
             params.set('vol_model', volModel);
             params.set('vol_scale', volScale);
             params.set('show_historical', showHistoricalPredictions);
+            params.set('show_signals', showBuySellSignals);
 
             window.location.href = '{{ url_for('chart') }}?' + params.toString();
         }

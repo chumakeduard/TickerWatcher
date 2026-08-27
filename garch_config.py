@@ -104,6 +104,17 @@ MIN_PRICE_MOVE_THRESHOLD = 0.1
 MAX_PRICE_MOVE_THRESHOLD = 100.0
 
 # ============================================================================
+# PROFIT TARGET MARKING
+# ============================================================================
+
+# Default profit target (%) for marking forecast candles that hit profit goal
+# Marks the closest candle where price reaches: last_close * (1 ± profit_pct/100)
+# Shows both upside (sell profit) and downside (short/buy profit) targets
+DEFAULT_PROFIT_PCT = 10.0
+MIN_PROFIT_PCT = 0.1
+MAX_PROFIT_PCT = 100.0
+
+# ============================================================================
 # NOTES & FUTURE ENHANCEMENTS
 # ============================================================================
 

@@ -241,7 +241,8 @@ def get_price_stats(opens, highs, lows, closes, volumes):
 
 
 def draw_chart(ticker, period_name, period_days, grouping='daily', include_forecast=True, forecast_days=14,
-                threshold_pct=10.0, garch_p=1, garch_q=1, vol_model='garch', vol_scale=0.8, show_historical=False):
+                threshold_pct=10.0, garch_p=1, garch_q=1, vol_model='garch', vol_scale=0.8, show_historical=False,
+                profit_pct=10.0, show_signals=False):
     """Generate professional stock chart image with optional GARCH forecast and historical predictions.
 
     Args:
@@ -256,6 +257,8 @@ def draw_chart(ticker, period_name, period_days, grouping='daily', include_forec
             numerically fragile on short windows — see backtest_garch.py notes)
         vol_scale: Volatility calibration factor (default 0.8)
         show_historical: If True, overlay blue line showing model's past predictions on historical data
+        profit_pct: Profit target % for marking forecast candles that hit profit goals (default 10%)
+        show_signals: If True, label each forecast candle with buy/sell signals and dates
     """
 
     # Fetch data
@@ -630,6 +633,148 @@ def draw_chart(ticker, period_name, period_days, grouping='daily', include_forec
         ax_chart.text(move['index'], y_pos, label_text, fontsize=8, color=line_color,
                       ha='center', va='top',
                       bbox=dict(boxstyle='round,pad=0.3', facecolor='#1a1a1a', edgecolor=line_color, alpha=0.8))
+
+    # Mark profit targets in the forecast: find where price first hits upside/downside targets
+    # Upside target: last_close * (1 + profit_pct/100) — sell for profit
+    # Downside target: last_close * (1 - profit_pct/100) — short/buy back for profit
+    if profit_pct > 0 and forecast_data and 'closes' in forecast_data:
+        last_close = closes[-1]
+        upside_target = last_close * (1 + profit_pct / 100)
+        downside_target = last_close * (1 - profit_pct / 100)
+
+        forecast_closes = forecast_data['closes']
+        forecast_dates = forecast_data['dates']
+
+        # Find the first forecast candle that hits each target (using highs for upside, lows for downside)
+        upside_hit = None
+        downside_hit = None
+
+        for idx, close_price in enumerate(forecast_closes):
+            candle_data = forecast_ohlc_by_index.get(len(dates) + idx + 1, {})
+            candle_high = candle_data.get('high', close_price)
+            candle_low = candle_data.get('low', close_price)
+
+            # Check upside target (using high)
+            if upside_hit is None and candle_high >= upside_target:
+                upside_hit = {
+                    'index': len(dates) + idx + 1,
+                    'date': forecast_dates[idx] if idx < len(forecast_dates) else None,
+                    'price': candle_high,
+                    'target_price': upside_target
+                }
+
+            # Check downside target (using low)
+            if downside_hit is None and candle_low <= downside_target:
+                downside_hit = {
+                    'index': len(dates) + idx + 1,
+                    'date': forecast_dates[idx] if idx < len(forecast_dates) else None,
+                    'price': candle_low,
+                    'target_price': downside_target
+                }
+
+            # Stop searching once both targets are found
+            if upside_hit and downside_hit:
+                break
+
+        # Draw horizontal lines and markers for profit targets
+        if upside_hit:
+            ax_chart.axhline(y=upside_target, color='#00d84f', linewidth=2, alpha=0.5, linestyle='--')
+            # Mark the candle that hits the target
+            ax_chart.axvline(x=upside_hit['index'], color='#00d84f', linewidth=2, alpha=0.4, linestyle=':')
+            label_text = f"Sell Profit ✓\n{upside_hit['date']}\n+{profit_pct:.1f}%"
+            ax_chart.text(upside_hit['index'], upside_target, label_text, fontsize=8, color='#00d84f',
+                          ha='center', va='bottom',
+                          bbox=dict(boxstyle='round,pad=0.3', facecolor='#1a1a1a', edgecolor='#00d84f', alpha=0.8))
+
+        if downside_hit:
+            ax_chart.axhline(y=downside_target, color='#ff3333', linewidth=2, alpha=0.5, linestyle='--')
+            # Mark the candle that hits the target
+            ax_chart.axvline(x=downside_hit['index'], color='#ff3333', linewidth=2, alpha=0.4, linestyle=':')
+            label_text = f"Short Profit ✓\n{downside_hit['date']}\n-{profit_pct:.1f}%"
+            ax_chart.text(downside_hit['index'], downside_target, label_text, fontsize=8, color='#ff3333',
+                          ha='center', va='top',
+                          bbox=dict(boxstyle='round,pad=0.3', facecolor='#1a1a1a', edgecolor='#ff3333', alpha=0.8))
+
+    # Show buy/sell signals on forecast candles (when enabled)
+    # Cycle through BUY -> SELL -> BUY -> SELL alternating pattern
+    # Each signal represents a point where profit_pct target is achievable
+    if show_signals and forecast_data and 'closes' in forecast_data:
+        forecast_closes = forecast_data['closes']
+        forecast_dates = forecast_data['dates']
+
+        signals = []  # List of signals in order: (idx, type, price, date, profit_pct)
+        profit_target = profit_pct / 100  # Convert % to decimal (e.g., 10% = 0.10)
+
+        # State machine: start by looking for a BUY (price dips down by profit_pct)
+        # Then look for SELL (price rises up by profit_pct), alternating
+        looking_for = 'BUY'  # Start looking for a BUY opportunity
+        anchor_price = closes[-1]  # Start from last historical close
+        anchor_idx = -1
+
+        for idx, close_price in enumerate(forecast_closes):
+            if looking_for == 'BUY':
+                # Looking for price to drop by profit_pct from anchor (or from max seen so far)
+                buy_target = anchor_price * (1 - profit_target)
+                if close_price <= buy_target:
+                    # Found a BUY signal
+                    signals.append({
+                        'idx': idx,
+                        'type': 'BUY',
+                        'price': close_price,
+                        'date': forecast_dates[idx] if idx < len(forecast_dates) else None,
+                        'profit_pct': None
+                    })
+                    # Now look for the corresponding SELL
+                    looking_for = 'SELL'
+                    anchor_price = close_price
+                    anchor_idx = idx
+                else:
+                    # Haven't found a BUY yet, update anchor to the highest price seen
+                    if close_price > anchor_price:
+                        anchor_price = close_price
+
+            elif looking_for == 'SELL':
+                # Looking for price to rise by profit_pct from the BUY point
+                sell_target = anchor_price * (1 + profit_target)
+                if close_price >= sell_target:
+                    # Found a SELL signal - calculate actual profit from the BUY
+                    actual_profit = ((close_price - anchor_price) / anchor_price * 100)
+                    signals.append({
+                        'idx': idx,
+                        'type': 'SELL',
+                        'price': close_price,
+                        'date': forecast_dates[idx] if idx < len(forecast_dates) else None,
+                        'profit_pct': actual_profit
+                    })
+                    # Now look for the next BUY
+                    looking_for = 'BUY'
+                    anchor_price = close_price
+                    anchor_idx = idx
+                else:
+                    # Haven't found a SELL yet, update anchor to the lowest price seen
+                    if close_price < anchor_price:
+                        anchor_price = close_price
+
+        # Draw all signals in order (alternating BUY -> SELL -> BUY -> SELL...)
+        for signal in signals:
+            x_index = len(dates) + signal['idx'] + 1
+            candle_data = forecast_ohlc_by_index.get(x_index, {})
+
+            if signal['type'] == 'BUY':
+                # BUY signal (green, positioned below)
+                buy_y = candle_data.get('low', signal['price']) * 0.98
+                buy_label = f"BUY\n{signal['date']}\n${signal['price']:.2f}"
+                ax_chart.text(x_index, buy_y, buy_label, fontsize=7, color='#00d84f',
+                              ha='center', va='top', fontweight='bold',
+                              bbox=dict(boxstyle='round,pad=0.2', facecolor='#1a1a1a', edgecolor='#00d84f', alpha=0.8))
+            else:  # SELL
+                # SELL signal (red, positioned above)
+                sell_y = candle_data.get('high', signal['price']) * 1.02
+                profit_text = f"+{signal['profit_pct']:.1f}%" if signal['profit_pct'] else ""
+                sell_label = f"SELL\n{signal['date']}\n${signal['price']:.2f}\n{profit_text}"
+                ax_chart.text(x_index, sell_y, sell_label, fontsize=7, color='#ff3333',
+                              ha='center', va='bottom', fontweight='bold',
+                              bbox=dict(boxstyle='round,pad=0.2', facecolor='#1a1a1a', edgecolor='#ff3333', alpha=0.8))
 
     # ===== VOLUME CHART =====
     ax_volume.set_facecolor('#1a1a1a')

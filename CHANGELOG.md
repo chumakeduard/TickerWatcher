@@ -4,6 +4,69 @@ Running log of every bug found, fixed, and feature added, in chronological order
 
 ---
 
+## 2026-08-26 (Buy/Sell Trading Signals & Profit Targets)
+
+### Feature: Profit Target Marking
+
+Added a "Profit %" slider (default 10%, range 0.1-50%) that marks the forecast prices where a profit % target is first achievable.
+
+**Visual elements:**
+- Green horizontal dashed line at upside target: `last_close × (1 + profit_pct/100)` — "sell for profit" opportunity
+- Red horizontal dashed line at downside target: `last_close × (1 - profit_pct/100)` — "short/buy for profit" opportunity
+- Vertical dotted lines marking the exact forecast candle that first hits each target
+- Labels showing date, target price, and profit %
+- Only marked in the forecast region (right of "today" boundary)
+
+**Implementation:**
+- Slider in Chart Controls sidebar, settable via `?profit_pct=X` query string
+- Included in cache key so chart regenerates when changed
+- Uses candle high/low (not just close) to detect target hit
+
+**Files:** `garch_config.py` (new constants), `app.py`, `templates/chart_sidebar.html`, `draw.py`.
+
+---
+
+### Feature: Buy/Sell Trading Signals (Alternating Cycle)
+
+Added a "Show Buy/Sell Signals" checkbox that labels every forecast candle with alternating BUY and SELL signals, where each consecutive pair achieves the configured profit % target.
+
+**Algorithm (state machine):**
+1. Start looking for a BUY: price must drop ≥profit_pct from the reference price
+2. Once BUY found, switch to looking for SELL: price must rise ≥profit_pct from the BUY
+3. Once SELL found, switch back to looking for BUY
+4. Continue alternating through entire forecast: BUY → SELL → BUY → SELL...
+
+**Visual labels:**
+- Green "BUY" labels (positioned below candles) when entry point is hit
+  - Shows date and price
+- Red "SELL" labels (positioned above candles) when exit point is hit
+  - Shows date, price, and actual profit % achieved
+- Each label has a colored box matching the signal type
+- Small, compact formatting to avoid crowding the chart
+
+**Features:**
+- Checkbox in Chart Controls, settable via `?show_signals=1`
+- Strict alternating pattern — no consecutive BUYs or SELLs
+- Each signal represents a real trading opportunity
+- Actual profit % calculated and displayed on SELL signals
+- Works with any profit_pct value
+
+**Files:** `app.py`, `templates/chart_sidebar.html`, `draw.py`.
+
+---
+
+### Cache Key Updates
+
+Updated cache key format to include `profit_pct` and `show_signals` parameters:
+- Old: `{ticker}_{period}_{grouping}_th{threshold:.1f}_fd{forecast_days}_p{p}q{q}_{vol_model}_vs{vol_scale:.2f}`
+- New: `{ticker}_{period}_{grouping}_th{threshold:.1f}_fd{forecast_days}_pr{profit_pct:.1f}_p{p}q{q}_{vol_model}_vs{vol_scale:.2f}_{hist_suffix}{sig_suffix}`
+
+This ensures charts are regenerated when these parameters change, not served stale from cache.
+
+**File:** `app.py` (`get_chart_key()`).
+
+---
+
 ## 2026-08-26 (Historical Predictions Overlay & Config Refactor)
 
 ### Feature: Historical Predictions Overlay

@@ -19,6 +19,11 @@ A comprehensive stock market data collection, visualization, and web interface s
 - 📊 **Model Configurability**: Switch between GARCH orders (1,1)/(1,2)/(2,1)/(2,2) and volatility models (GARCH/EGARCH) from sidebar
 - 🎚️ **Volatility Calibration**: Adjust the vol_scale factor (0.3–1.5×, default 0.8×) to correct for GARCH's systematic over-forecast bias
 - 🎯 **Price-Move Thresholds**: Mark significant price movements (>10% default) with vertical lines and date labels
+- 💰 **Profit Target Markers**: Shows exactly where forecast will hit your profit % target (upside & downside)
+- 📍 **Buy/Sell Trading Signals**: Alternating BUY-SELL-BUY-SELL cycle showing profitable trading opportunities
+  - Each signal pair achieves the configured profit % target
+  - Labeled with date, price, and actual profit %
+  - Green BUY signals (entry points), Red SELL signals (exit points)
 - 🔄 **One-Click Refresh**: Sidebar button fetches the latest data for all tickers and reloads the chart automatically
 
 ## Project Structure
@@ -128,6 +133,25 @@ Access the web interface:
 - **Grouping Options**: Select chart granularity (daily, weekly, monthly)
 - **Direct URLs**: All parameters support query strings for automation
 
+### Chart Controls Panel (⚙️)
+
+Sidebar section for real-time adjustment of visualization parameters:
+
+| Control | Default | Range | Purpose |
+|---------|---------|-------|---------|
+| **Price Move Threshold** | 10% | 0.1–100% | Mark candlesticks where price moved ≥ threshold |
+| **Forecast Days** | 3–21* | 1–60 | Override default forecast period length |
+| **GARCH Order (p,q)** | (1,1) | (1,1), (1,2), (2,1), (2,2) | Model complexity — (1,1) backtested as best |
+| **Volatility Model** | GARCH | GARCH, EGARCH | Symmetric vs asymmetric; GARCH is stable |
+| **Vol. Calibration** | 0.8× | 0.3–1.5× | Correction factor for GARCH over-forecast |
+| **Profit % Target** | 10% | 0.1–50% | Mark where forecast hits profit goal |
+| **Show Historical Predictions** | Off | On/Off | Overlay past model predictions (blue) on real data |
+| **Show Buy/Sell Signals** | Off | On/Off | Label alternating BUY→SELL trading opportunities |
+
+*Default forecast days depend on period: 1D→3, 5D→5, 1M/3M/6M→14, YTD/1Y/5Y/MAX→21
+
+**Click "Apply"** to regenerate chart with new settings. All parameters also support query strings for URLs.
+
 ### URL Structure
 
 ```
@@ -148,6 +172,15 @@ http://localhost:8080/chart?ticker=MSFT&period=MAX&vol_model=egarch
 
 # GOOGL with 15% price-move threshold and 10-day forecast
 http://localhost:8080/chart?ticker=GOOGL&period=3M&threshold=15&forecast_days=10
+
+# NVDA with profit target markers (show where 5% profit is achievable)
+http://localhost:8080/chart?ticker=NVDA&period=3M&profit_pct=5
+
+# AAPL with buy/sell trading signals (alternating entry/exit points for 10% profit)
+http://localhost:8080/chart?ticker=AAPL&period=1M&show_signals=1&profit_pct=10
+
+# TSLA with all advanced features
+http://localhost:8080/chart?ticker=TSLA&period=6M&show_signals=1&profit_pct=8&show_historical=1&vol_scale=0.75
 ```
 
 **Note:** Charts always display daily granularity. Grouping selector has been removed from the UI for simplicity.
