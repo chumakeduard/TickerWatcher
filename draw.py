@@ -58,16 +58,18 @@ def compute_historical_predictions(ticker, dates, closes, garch_p, garch_q, vol_
 
     Efficiency approach: fitting GARCH fresh for every single day would be far too
     slow for long periods, so instead we fit once per "window" of `step` days and
-    use that single fit's multi-step forecast (horizon=step) to derive a predicted
-    close + per-day volatility for every day inside the window.
+    use that single fit's multi-step forecast (horizon=step) to derive per-day
+    volatility for every day inside the window.
 
-    Each window's price path is re-anchored to the ACTUAL close at that window's
-    start. This keeps predictions bounded/accurate (a version that never re-anchors
-    compounds drift error unboundedly over a long period and can wander far off the
-    visible price range) — but it does produce a visible jump at every window
-    boundary if you only look at raw closes ("stair" pattern). The candlesticks
-    show this raw, honest per-window data; the additional smoothed line (moving
-    average over the same closes) gives a continuous trend to eyeball at a glance.
+    Deliberately blind to what actually happened: each window's price path is
+    generated with the SAME random-walk simulation as the real forward forecast
+    (drift + a Gaussian shock sized by that day's GARCH volatility, plus a smaller
+    jitter for the candle's open/high/low) — not a "we know the real close" trick.
+    It's re-anchored to the actual close only at each window's START (since that's
+    the one piece of information a walk-forward backtest is allowed to know: "here
+    is today, predict forward from here"), then simulated exactly as blindly as the
+    future forecast is. The RNG is seeded deterministically per (ticker, window
+    start date) so the page renders the same simulated path on every reload.
 
     Args:
         ticker: Stock ticker
@@ -86,6 +88,7 @@ def compute_historical_predictions(ticker, dates, closes, garch_p, garch_q, vol_
           'line': list of {'index', 'close'} — smoothed version of the same closes
     """
     import sqlite3
+    import hashlib
 
     raw_candles = []
     n = len(closes)
@@ -119,10 +122,9 @@ def compute_historical_predictions(ticker, dates, closes, garch_p, garch_q, vol_
     cursor = conn.cursor()
 
     # Walk forward from the very first displayed day to the most recent, fitting
-    # once per window and re-anchoring the price path to the actual close at each
-    # window's start (bounded/accurate).
+    # once per window and simulating a random-walk price path forward from the
+    # actual close at that window's start (same method as the real forecast).
     w_start = 0
-    prev_close_for_open = closes[0]
 
     while w_start < n - 1:
         window_len = min(step, n - 1 - w_start)
@@ -153,7 +155,14 @@ def compute_historical_predictions(ticker, dates, closes, garch_p, garch_q, vol_
             day_vols = (np.sqrt(variance_forecast) / 100) * vol_scale  # fraction, calibrated
 
             drift = float(np.mean(train_returns)) / 100
-            running_close = train_closes[-1]  # actual close at w_start — re-anchor each window
+            current_price = train_closes[-1]  # actual close at w_start — the one thing this window "knows"
+
+            # Deterministic per-window seed (ticker + window start date) so the same
+            # simulated path renders on every reload — mirrors the future forecast's
+            # (ticker, last_date) seeding pattern.
+            seed_str = f"{ticker}_{cutoff_date}_hist"
+            seed = int(hashlib.md5(seed_str.encode()).hexdigest(), 16) % (2**32)
+            rng = np.random.RandomState(seed)
 
             for day_offset in range(1, window_len + 1):
                 idx = w_start + day_offset
@@ -161,19 +170,25 @@ def compute_historical_predictions(ticker, dates, closes, garch_p, garch_q, vol_
                     break
 
                 day_vol = day_vols[day_offset - 1] if (day_offset - 1) < len(day_vols) else day_vols[-1]
-                predicted_close = running_close * (1 + drift)
 
-                o = prev_close_for_open
-                c = predicted_close
-                spread = day_vol * predicted_close * 0.6
-                h = max(o, c) + spread
-                l = min(o, c) - spread
+                # Same random-walk step as the real forward forecast: drift + a
+                # Gaussian shock sized by this day's GARCH volatility.
+                drift_component = current_price * drift
+                shock_component = rng.normal(0, day_vol * current_price)
+                current_price = max(current_price + drift_component + shock_component, 0.01)
+                close_price = current_price
+
+                # Same OHLC jitter formula as the real forward forecast candles.
+                daily_vol = day_vol * close_price
+                o = close_price + rng.normal(0, daily_vol * 0.3)
+                h = max(close_price, o) + abs(rng.normal(0, daily_vol * 0.5))
+                l = min(close_price, o) - abs(rng.normal(0, daily_vol * 0.5))
+                c = close_price
+                h = max(h, max(o, c))
+                l = min(l, min(o, c))
 
                 raw_candles.append({'index': idx, 'open': float(o), 'high': float(h),
                                      'low': float(l), 'close': float(c)})
-
-                running_close = predicted_close
-                prev_close_for_open = predicted_close
         except Exception:
             pass
 
