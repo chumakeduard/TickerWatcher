@@ -350,7 +350,10 @@ def draw_chart(ticker, period_name, period_days, grouping='daily', include_forec
     fig.suptitle('', y=0.98)
 
     # Create grid layout
-    gs = fig.add_gridspec(12, 10, left=0.08, right=0.95, top=0.92, bottom=0.08,
+    # 13 rows (was 12) — the extra row (10) is left empty as breathing room between
+    # ax_volume and ax_stats so the volume chart's rotated x-axis date labels have
+    # somewhere to go without being overlapped/obscured by the stats panel text.
+    gs = fig.add_gridspec(13, 10, left=0.08, right=0.95, top=0.92, bottom=0.08,
                           hspace=0.4, wspace=0.3)
 
     # Header area
@@ -668,8 +671,48 @@ def draw_chart(ticker, period_name, period_days, grouping='daily', include_forec
     ax_volume.spines['left'].set_color('#333333')
     ax_volume.spines['bottom'].set_color('#333333')
 
+    # ===== X-AXIS DATE LABELS =====
+    # Both subplots previously showed raw numeric candle indices (0, 20, 40...) with
+    # no way to tell what date a position corresponds to. Map a handful of evenly
+    # spaced tick positions to their real dates (historical + forecast) instead.
+    index_to_date = {i: dates[i] for i in range(len(dates))}
+    if forecast_data and forecast_data.get('dates'):
+        for f_idx, f_date in enumerate(forecast_data['dates']):
+            index_to_date[len(dates) + f_idx + 1] = f_date
+
+    num_ticks = 7
+    raw_positions = np.linspace(0, max(index_to_date.keys()), num_ticks)
+    available_indices = sorted(index_to_date.keys())
+    tick_positions = []
+    for pos in raw_positions:
+        nearest = min(available_indices, key=lambda k: abs(k - pos))
+        if nearest not in tick_positions:
+            tick_positions.append(nearest)
+
+    # Pick a date format based on the total span so labels stay readable whether
+    # this is a 1-day chart or a 40-year MAX chart.
+    first_date_obj = datetime.strptime(dates[0], '%Y-%m-%d')
+    last_date_obj = datetime.strptime(dates[-1], '%Y-%m-%d')
+    span_days = (last_date_obj - first_date_obj).days
+    if span_days > 730:      # > 2 years: month resolution is enough
+        date_fmt = '%Y-%m'
+    elif span_days > 60:     # weeks to months: full date
+        date_fmt = '%Y-%m-%d'
+    else:                    # short/intraday-ish ranges: just month/day
+        date_fmt = '%m/%d'
+
+    tick_labels = [datetime.strptime(index_to_date[i], '%Y-%m-%d').strftime(date_fmt) for i in tick_positions]
+
+    ax_volume.set_xticks(tick_positions)
+    ax_volume.set_xticklabels(tick_labels, rotation=30, ha='right', fontsize=8)
+    # Top chart shares the same x positions but doesn't need its own duplicate labels
+    ax_chart.set_xticks(tick_positions)
+    ax_chart.set_xticklabels([])
+
     # ===== STATS PANEL (bottom right) =====
-    ax_stats = fig.add_subplot(gs[10:, 5:])
+    # Starts one row lower than before (11, not 10) — row 10 is left empty so the
+    # volume chart's rotated x-axis date labels have room without overlapping this text.
+    ax_stats = fig.add_subplot(gs[11:, 5:])
     ax_stats.axis('off')
 
     stats_text = f"""52W High: ${stats['high_52w']:.2f}
@@ -708,7 +751,7 @@ def main():
 
     args = parser.parse_args()
 
-    # Map period to days
+    # Map period to days (MAX = all available history, not the same 5 years as 5Y)
     period_map = {
         '1D': 1,
         '5D': 5,
@@ -718,7 +761,7 @@ def main():
         'YTD': 365,
         '1Y': 365,
         '5Y': 1825,
-        'MAX': 1825
+        'MAX': 36500
     }
 
     period_days = period_map.get(args.period, 180)

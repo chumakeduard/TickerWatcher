@@ -221,7 +221,10 @@ def get_period_days(period):
         'YTD': 365,
         '1Y': 365,
         '5Y': 1825,
-        'MAX': 1825
+        # MAX must actually mean "all available history", not the same 5 years as
+        # 5Y — some tickers (e.g. MSFT) have 30-40+ years of data. 36500 days
+        # (100 years) safely covers any ticker's full history without a DB query.
+        'MAX': 36500
     }
     return period_map.get(period, 180)
 
