@@ -2,7 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/.idea/TickerWatcher.iml" filepath="$PROJECT_DIR$/.idea/TickerWatcher.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/tickerwatcher.iml" filepath="$PROJECT_DIR$/.idea/tickerwatcher.iml" />
     </modules>
   </component>
 </project>

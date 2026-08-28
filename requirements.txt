@@ -1,5 +1,23 @@
+# Runtime dependencies.
+#
+# Version floors reflect what this is tested against. The installed versions are
+# currently the NEWEST available for Python 3.9 — that interpreter is the ceiling
+# for the whole stack, not these pins. Notably:
+#
+#   yfinance  1.2.0 installed, 1.7.0 released
+#       1.7.0 needs curl_cffi>=0.15, which needs Python>=3.10.
+#   numpy 2.0.2, scipy 1.13.1, matplotlib 3.9.4
+#       all are the last releases supporting Python 3.9.
+#
+# Upgrading to Python >=3.11 unlocks newer numpy/scipy/matplotlib and yfinance.
+# Until then `pip list --outdated` is expected to show yfinance as behind.
+
+flask>=3.0
+matplotlib>=3.9
 yfinance>=0.2.32
-pandas>=2.0.0
-matplotlib>=3.5.0
-numpy>=1.20.0
-flask>=2.0.0
+pandas>=2.0
+numpy>=1.24
+scipy>=1.10
+arch>=7.0
+
+# Dev/test extras: pip install -r requirements-dev.txtcl

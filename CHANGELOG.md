@@ -4,6 +4,113 @@ Running log of every bug found, fixed, and feature added, in chronological order
 
 ---
 
+## 2026-08-28 (Model Calibration Rewrite, `garch` Package, Production Hardening)
+
+### Fix: the model-selection sweep was ranking on metrics that could not rank anything
+
+The previous `--sweep` compared 8 configs and reported the *same* `MAPE: 1.75%` for
+every one of them. That was not a coincidence — it was the bug. The forecast price
+path is built purely from historical-mean drift, which has no dependence on the
+volatility model, so MAE / MAPE / RMSE / direction-accuracy are **byte-identical for
+every config by construction**. Ranking on them is meaningless; the tie-break then
+fell to BIC, which measures in-sample fit rather than forecast accuracy.
+
+Seven flaws found in total:
+
+| # | Flaw | Consequence |
+|---|---|---|
+| 1 | Ranked on drift-only metrics | identical scores for all configs |
+| 2 | Tie-broke on BIC | optimised in-sample fit, not forecasting |
+| 3 | `vol_scale` frozen, never searched | configs judged at an arbitrary calibration |
+| 4 | 8 of ~80 available configs | no GJR-GARCH, APARCH, FIGARCH, HARCH, ARCH, and no fat-tailed distributions |
+| 5 | Swept a single ticker | recommendation overfit to one name |
+| 6 | Re-queried SQLite per (config × window) | ~55k redundant queries |
+| 7 | `np.std` of 7 points as the vol target | very noisy, and biased low via `ddof=0` |
+
+**Rewritten as a proper calibration engine:**
+- **160 configurations** — every `arch` family (ARCH / GARCH / GJR-GARCH / EGARCH /
+  APARCH / FIGARCH / HARCH) × orders × 4 error distributions (normal / t / skewt /
+  ged) × 2 training windows. Each verified to both fit *and* produce finite positive
+  multi-step forecasts before inclusion.
+- **QLIKE objective** (Patton 2011) — a proper scoring rule for volatility that stays
+  valid when squared returns are a noisy variance proxy, which is exactly this regime.
+- **`vol_scale` solved in closed form.** Scaling σ → c·σ gives
+  `QLIKE(c) = 2ln(c) + mean(ln σ²) + (1/c²)·mean(r²/σ²)`, so `c* = sqrt(mean(r²/σ²))`.
+  Every config is scored at *its own* optimum, making the comparison fair and
+  producing the recommended `vol_scale` as a by-product.
+- Runs **all tickers**, parallel across cores, fetching each window's data once.
+- Bias measured in **variance space** — comparing `mean(σ)` to `mean(|r|)` is not
+  apples-to-apples, since `E|r| = σ·sqrt(2/π) ≈ 0.8σ` makes a perfect forecast look
+  1.25× biased.
+
+### Fix: selection overfitting made the "winner" untrustworthy
+
+Choosing the best of 160 candidates on one dataset means the winner is partly winning
+by chance; a point estimate cannot distinguish that from a real edge. An early
+small-sample run had ARCH(3) beating GARCH(1,1), which was almost certainly noise.
+
+- **Held-out validation split** — selection happens on older windows; the most recent
+  25% are held out entirely. `vol_scale` is fitted on selection and applied
+  *unchanged* to validation, since refitting there would leak held-out data into the
+  recommended number.
+- **Diebold-Mariano test** against the **incumbent production config**, with a
+  Newey-West HAC standard error. The HAC part matters: overlapping forecast windows
+  autocorrelate the loss differentials, and a naive standard error would be too small
+  — making noise look significant, the exact failure being guarded against.
+- **Parsimony tie-break** among statistically tied survivors.
+- **Decision rule:** config changes only if a candidate beats the incumbent on
+  held-out data *and* clears DM `p < 0.05`. Otherwise the incumbent is kept and the
+  run says so — "no significant improvement" is a valid outcome.
+
+### Feature: the calibration now writes its own config
+
+`garch_config.py` gained a machine-managed block between `BEGIN/END CALIBRATED
+DEFAULTS` markers. `--apply` regenerates it and reloads the module to prove the
+result still imports. An asset class absent from a run keeps its current values, so
+calibrating only crypto never clobbers stocks. Provenance (date, QLIKE, DM p,
+ticker count, `vol_scale` range) is recorded alongside.
+
+The config schema previously could not *express* a calibration result — no error
+distribution, no asymmetry order on GARCH, no per-asset model family. Added those,
+plus `get_model_defaults()`, and generalized `garch_model.py` from a hardcoded
+`garch`/`egarch` if-else to all 6 families × 4 distributions (all 12 spot-checked
+combinations verified to serve).
+
+### Refactor: `garch/` package
+
+`backtest_garch.py` → `garch/garch_backtest.py`; `garch_config.py` and
+`garch_model.py` moved alongside, with `__init__.py` re-exporting the common entry
+points. Imports updated across `app.py` and `draw.py`. Runnable both as a package
+and as a direct script.
+
+### Production hardening
+
+- **`requirements.txt` was missing `arch` entirely** — the core forecasting
+  dependency. A fresh `pip install -r requirements.txt` produced an app where
+  `ARCH_AVAILABLE = False` and all volatility forecasting silently did nothing.
+  Added, along with `scipy`; floors realigned to the versions actually tested against.
+- **`sys.exit(1)` inside `draw.py:get_ticker_data()`** — this runs inside Flask
+  request handling, and `SystemExit` derives from `BaseException`, so the
+  `except Exception` in `ensure_chart_exists()` would *not* catch it: an unknown
+  ticker would tear down the worker instead of returning an error. Now raises
+  `NoDataError`.
+- `print()` in library code (`garch_model.py`, `draw.py`, `app.py`) replaced with
+  module loggers.
+- **Test suite added** (`tests/`, 50 tests) — none existed. Covers the calibration
+  maths against known-answer cases (`optimal_scale` recovers a planted 1.5× bias;
+  QLIKE optimum verified against neighbours and against its analytic identity), DM
+  false-positive rate under the null, every family × distribution fitting and
+  forecasting, config/​model contract integrity, and the config write-back round-trip.
+- `.gitignore` written; **`database/prices.db` and `logs/` were tracked in git** and
+  are now untracked (files preserved on disk).
+- `pyproject.toml` added with pytest config; `requirements-dev.txt` split out.
+
+**Files:** `garch/garch_backtest.py`, `garch/garch_config.py`, `garch/garch_model.py`,
+`garch/__init__.py`, `tests/`, `app.py`, `draw.py`, `pyproject.toml`, `.gitignore`,
+`requirements.txt`, `requirements-dev.txt`, `.claude/skills/calibrate-model/SKILL.md`.
+
+---
+
 ## 2026-08-28 (Cryptocurrency Support)
 
 ### Feature: Crypto Monitoring (BTC, ETH)

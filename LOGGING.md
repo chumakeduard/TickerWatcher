@@ -14,7 +14,7 @@ Each date gets its own log file:
 Each file captures all operations:
 - Application startup events
 - Data refresh operations (refresh.py)
-- Model calibration & backtests (backtest_garch.py)
+- Model calibration & backtests (garch/garch_backtest.py)
 - Web refresh operations (app.py)
 
 **Example log entries:**
@@ -109,7 +109,7 @@ app_logger.info("Custom app message")
   - Total tickers updated
   - Overall completion status
 
-### Model Calibration (`backtest_garch.py`)
+### Model Calibration (`garch/garch_backtest.py`)
 - ✅ Sweep initialization (ticker, asset type)
 - ✅ Configuration matrix (vol models × GARCH orders)
 - ✅ Recommended models per vol_model with metrics:

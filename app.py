@@ -7,12 +7,12 @@ import os
 import threading
 from datetime import datetime
 from config import TICKERS, CRYPTO
-from draw import draw_chart
-from garch_model import forecast_volatility, get_garch_stats
+from draw import draw_chart, NoDataError
+from garch.garch_model import forecast_volatility, get_garch_stats
 from logging_config import get_app_logger
 
 logger = get_app_logger()
-from garch_config import (
+from garch.garch_config import (
     VALID_GARCH_ORDERS,
     VALID_VOL_MODELS,
     DEFAULT_VOL_SCALE,
@@ -281,8 +281,13 @@ def ensure_chart_exists(ticker, period, grouping='daily', threshold_pct=10.0, fo
                 'predictions': predictions_data,
                 'meta': chart_meta
             }
+        except NoDataError:
+            # Expected condition (ticker not backfilled yet), not a server fault —
+            # log at info and let the caller turn it into a 404.
+            logger.info(f"No data for {ticker} ({period}, {asset_type})")
+            raise
         except Exception as e:
-            print(f"Error generating chart: {e}")
+            logger.exception(f"Error generating chart for {ticker} ({period}): {e}")
             return None
 
     return cache_key if chart_cache.get(cache_key) else None
@@ -371,11 +376,19 @@ def chart():
         effective_forecast_days = get_forecast_days(period, asset_type=asset_type)
 
     # Ensure chart exists in cache, passing threshold, forecast_days, profit_pct, show_signals, and GARCH model settings
-    chart_key = ensure_chart_exists(ticker, period, grouping, threshold_pct=threshold_pct,
-                                   forecast_days_override=forecast_days_override,
-                                   garch_p=garch_p, garch_q=garch_q, vol_model=vol_model, vol_scale=vol_scale,
-                                   show_historical=show_historical, profit_pct=profit_pct, show_signals=show_signals,
-                                   asset_type=asset_type)
+    try:
+        chart_key = ensure_chart_exists(ticker, period, grouping, threshold_pct=threshold_pct,
+                                       forecast_days_override=forecast_days_override,
+                                       garch_p=garch_p, garch_q=garch_q, vol_model=vol_model, vol_scale=vol_scale,
+                                       show_historical=show_historical, profit_pct=profit_pct, show_signals=show_signals,
+                                       asset_type=asset_type)
+    except NoDataError:
+        # Missing data is a client-side condition (unknown/unbackfilled ticker),
+        # not a server fault — 404, not 500.
+        return render_template(
+            'error.html',
+            error=f"No price data stored for {ticker} yet. Run a data refresh to fetch it."
+        ), 404
 
     if not chart_key:
         error_msg = f"Could not generate chart for {ticker}"

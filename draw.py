@@ -13,8 +13,15 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.patches import Rectangle
 import sqlite3
+import logging
 from db import DB_PATH
-from garch_config import GARCH_TRAINING_DAYS, CRYPTO_GARCH_TRAINING_DAYS
+from garch.garch_config import GARCH_TRAINING_DAYS, CRYPTO_GARCH_TRAINING_DAYS
+
+logger = logging.getLogger(__name__)
+
+
+class NoDataError(Exception):
+    """Raised when a ticker has no rows for the requested period."""
 
 
 def get_ticker_data(ticker, period_days, is_crypto=False):
@@ -38,8 +45,10 @@ def get_ticker_data(ticker, period_days, is_crypto=False):
     conn.close()
 
     if not rows:
-        print(f"No data found for {ticker} in {table}")
-        sys.exit(1)
+        # Must raise, never sys.exit(): this runs inside Flask request handling,
+        # and SystemExit derives from BaseException so `except Exception` would not
+        # catch it — it would tear down the worker instead of returning an error.
+        raise NoDataError(f"No data found for {ticker} in {table}")
 
     dates = [row['date'] for row in rows]
     opens = [row['open'] for row in rows]
@@ -293,10 +302,10 @@ def draw_chart(ticker, period_name, period_days, grouping='daily', include_forec
 
     if include_forecast:
         try:
-            from garch_model import forecast_volatility as garch_forecast_func
+            from garch.garch_model import forecast_volatility as garch_forecast_func
             from datetime import timedelta
 
-            from garch_config import CRYPTO_GARCH_TRAINING_DAYS
+            from garch.garch_config import CRYPTO_GARCH_TRAINING_DAYS
             days_for_training = CRYPTO_GARCH_TRAINING_DAYS if is_crypto else GARCH_TRAINING_DAYS
             forecast_result = garch_forecast_func(ticker, periods=forecast_days, days=days_for_training,
                                                    p=garch_p, q=garch_q, vol_model=vol_model, vol_scale=vol_scale, is_crypto=is_crypto)
@@ -349,7 +358,7 @@ def draw_chart(ticker, period_name, period_days, grouping='daily', include_forec
                     forecast_data['closes'].append(current_price)
                     forecast_data['volatility'].append(day_vol)
         except Exception as e:
-            print(f"Could not generate GARCH forecast: {e}")
+            logger.warning(f"Could not generate GARCH forecast for {ticker}: {e}")
             forecast_data = None
             forecast_volatility_value = None
 
@@ -905,8 +914,14 @@ def main():
 
     period_days = period_map.get(args.period, 180)
 
-    draw_chart(args.ticker.upper(), args.period, period_days, args.grouping)
+    # get_ticker_data raises rather than exiting (it also runs inside Flask, where
+    # sys.exit would kill the worker). The CLI is where that becomes an exit code.
+    try:
+        draw_chart(args.ticker.upper(), args.period, period_days, args.grouping)
+    except NoDataError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main() or 0)

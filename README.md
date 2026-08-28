@@ -34,9 +34,11 @@ TickerWatcher/
 ├── db.py                         # Database operations and data fetching
 ├── refresh.py                    # Data refresh script
 ├── draw.py                       # Chart image generation with GARCH forecasts + historical predictions overlay
-├── garch_model.py               # GARCH volatility forecasting model
-├── garch_config.py              # Centralized GARCH configuration (training window, defaults, valid orders/models)
-├── backtest_garch.py            # Walk-forward backtest script for validating model settings
+├── garch/                        # Volatility forecasting package
+│   ├── __init__.py              # Re-exports forecast_volatility, get_garch_stats, ...
+│   ├── garch_model.py           # Production forecaster (all arch families + distributions)
+│   ├── garch_config.py          # Configuration; calibrated-defaults block is machine-written
+│   └── garch_backtest.py        # Walk-forward backtest + full model-selection sweep
 ├── app.py                        # Flask web application
 ├── templates/
 │   ├── chart_sidebar.html       # Main chart page with sidebar navigation
@@ -303,7 +305,7 @@ The GARCH model systematically over-forecasts realized volatility. A calibration
 
 3. **Backtest via CLI**:
    ```bash
-   python backtest_garch.py --ticker NVDA --windows 36 --vol-scale 0.75
+   python garch/garch_backtest.py --ticker NVDA --windows 36 --vol-scale 0.75
    ```
 
 **When to Recalibrate:**
@@ -340,11 +342,11 @@ Validate model settings on historical data using the `calibrate-model` skill:
 
 ```bash
 # Run backtest for a single ticker
-python backtest_garch.py --ticker NVDA --windows 36 --train-years 2 --vol-scale 0.8
+python garch/garch_backtest.py --ticker NVDA --windows 36 --train-years 2 --vol-scale 0.8
 
 # Run for multiple tickers and export results
 for ticker in VDE VOO VTI; do
-  python backtest_garch.py --ticker $ticker --windows 36 --vol-scale 0.8 --csv /tmp/${ticker}_results.csv
+  python garch/garch_backtest.py --ticker $ticker --windows 36 --vol-scale 0.8 --csv /tmp/${ticker}_results.csv
 done
 ```
 

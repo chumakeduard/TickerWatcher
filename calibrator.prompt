@@ -1,0 +1,104 @@
+Build an automated model-calibration system for <APP/REPO>.
+
+CONTEXT
+- The app makes predictions using <MODEL/LIBRARY>, whose behaviour is controlled by
+  tunable settings: <e.g. model family, order/hyperparameters, distribution, training
+  window length, scaling factor>.
+- Those settings are currently <hardcoded / guessed / set once by hand>.
+- Historical ground truth is available in <DATA SOURCE>.
+- Entities to calibrate over: <e.g. all tickers / users / regions>. If they fall into
+  groups that plausibly behave differently (<e.g. stocks vs crypto>), calibrate each
+  group independently rather than assuming one shared optimum.
+
+GOAL
+Empirically choose the settings that make predictions match reality best, prove the
+choice is not luck, and write it back into config automatically.
+
+METHOD — these are requirements, not suggestions
+
+1. SCORE ONLY WHAT THE SETTINGS ACTUALLY AFFECT.
+   Before writing the scorer, verify the metric changes when the setting changes.
+   If part of the output is produced by a component the settings don't touch, any
+   metric over that part is identical for every candidate and cannot rank anything.
+   Print the metric for 2-3 very different configs and confirm the numbers differ.
+
+2. EVALUATE OUT OF SAMPLE, WALK-FORWARD.
+   Pick a past cutoff, train only on data before it, predict forward, compare to what
+   actually happened. Repeat across many cutoffs (aim for 50+) and all entities.
+
+3. USE A PROPER SCORING RULE for the quantity being predicted, not a convenience
+   metric. State why the chosen loss is appropriate when the ground-truth signal is
+   noisy. Do NOT rank on in-sample fit criteria (AIC/BIC/R²/log-likelihood) — those
+   measure fit, not forecasting.
+
+4. SOLVE NUISANCE PARAMETERS IN CLOSED FORM where the math allows, instead of grid
+   searching. Judge every candidate at ITS OWN optimum so no candidate is penalised
+   by a default that happened to suit another.
+
+5. SEARCH THE FULL SPACE the library supports, not a token subset. Enumerate it,
+   verify each combination actually runs end to end, and drop only what genuinely
+   fails. Include options a human wouldn't have thought to try.
+
+6. GUARD AGAINST SELECTION OVERFITTING — the critical part. Picking the best of N
+   candidates means the winner is partly winning by luck.
+   a. Hold out the most recent ~25% of evaluation points. Select on the rest.
+      Fit any scale/nuisance parameter on the selection portion and apply it
+      UNCHANGED to the holdout — refitting there leaks the answer.
+   b. Significance-test the winner against THE CURRENT PRODUCTION SETTING (not an
+      arbitrary baseline) on holdout data, using per-observation losses. Use an
+      autocorrelation-robust standard error if evaluation windows overlap.
+   c. Break statistical ties by simplicity (fewest parameters).
+   d. Change config ONLY if the winner beats the incumbent on holdout AND clears
+      p < 0.05. Otherwise keep the incumbent and say so explicitly.
+      "No significant improvement" must be a supported, reported outcome.
+
+7. REQUIRE FULL COVERAGE. A candidate that fails to converge on part of the universe
+   is not eligible, however good its average looks.
+
+8. BE REPRODUCIBLE. Fix seeds for any simulation. Same input, same ranking.
+
+PLUMBING
+- Verify the config schema can EXPRESS the winning answer and the serving code can
+  SERVE it. Extend both first if not — a recommendation the app can't run is useless.
+- Write results into a clearly delimited machine-managed block in the config file,
+  then reload it to prove it still imports. Record provenance: date, score, p-value,
+  entity count, parameter range.
+- Calibrating one group must never clobber another group's settings.
+- Persist full rankings to a dated file so runs can be diffed.
+- Parallelise across entities; fetch each evaluation window's data once and reuse it
+  for all candidates.
+
+TESTS (required)
+- Nuisance-parameter solver recovers a deliberately planted known value.
+- The optimum genuinely beats neighbouring values.
+- The significance test does NOT fire on pure noise (check false-positive rate).
+- Every candidate in the search space runs and returns finite, valid output.
+- Config write-back round-trips exactly and the result still imports.
+
+DELIVERABLES
+1. The calibration engine (also runnable for a single config, for debugging).
+2. Config with a machine-managed block + provenance.
+3. Tests above.
+4. A runbook: the one command to run, expected runtime, how to read the output,
+   and how to interpret "no change recommended".
+
+FIRST, before writing code: review the existing setup and report what's wrong with
+how these settings are chosen today. Be specific and skeptical — if the current
+metric can't distinguish candidates, say so and show it.
+
+
+---
+NOTES ON WHY TWO POINTS ARE WORDED SO FORCEFULLY
+(from the TickerWatcher GARCH calibration this was derived from)
+
+Point 1 exists because the original sweep ranked eight volatility models on price-path
+error — but the forecast price path came from historical mean drift, which the
+volatility model does not influence at all. Every candidate scored an identical
+"MAPE: 1.75%", and the tie silently fell through to an in-sample fit criterion.
+The bug was invisible because the output looked perfectly reasonable.
+
+Point 6 exists because a 5-window trial run, with no holdout and no significance test,
+confidently recommended an exotic model (ARCH(3)) over the incumbent GARCH(1,1).
+With 160 candidates and a small sample, something will always look like a winner.
+Adding the holdout split plus a Diebold-Mariano test against the incumbent was what
+made the recommendation trustworthy rather than merely confident.

@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tickerwatcher"
+version = "1.0.0"
+description = "Stock and crypto price monitoring with GARCH-family volatility forecasting"
+requires-python = ">=3.9"
+dependencies = [
+    "flask>=3.0",
+    "matplotlib>=3.9",
+    "yfinance>=0.2.32",
+    "pandas>=2.0",
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "arch>=7.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+]
+
+[tool.setuptools]
+# Top-level modules are flat (app, draw, db, refresh, config, logging_config);
+# `garch` is the only real package.
+packages = ["garch"]
+py-modules = ["app", "draw", "db", "refresh", "config", "logging_config"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Project root on sys.path so tests import the app modules without installation.
+pythonpath = ["."]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::FutureWarning",
+]

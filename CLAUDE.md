@@ -106,7 +106,7 @@ August 26, 2026 (Buy/Sell Signals & Profit Targets)
 - Threaded `vol_scale` through `draw.py`, `app.py`, cache key, and all routes
 - Added **Vol. Calibration slider** to sidebar (0.3–1.5×, default 0.8×) for user experimentation
 - Supports `?vol_scale=X` query parameter for reproducible URL sharing
-- Backtest script (`backtest_garch.py`) includes `--vol-scale` option for validating other correction factors
+- Backtest script (`garch/garch_backtest.py`) includes `--vol-scale` option for validating other correction factors
 
 **Note on direction/drift accuracy:**
 - Across all tickers, historical-mean drift predicts direction at ~50% accuracy (coin-flip)
@@ -144,7 +144,7 @@ August 26, 2026 (Buy/Sell Signals & Profit Targets)
 
 ## Historical Predictions Overlay (Aug 26, 2026)
 
-**Purpose:** Visually validate the model — overlay what the model would have predicted at each point in the *past* on top of the real candlesticks, so accuracy can be eyeballed directly on the chart instead of only via `backtest_garch.py` output.
+**Purpose:** Visually validate the model — overlay what the model would have predicted at each point in the *past* on top of the real candlesticks, so accuracy can be eyeballed directly on the chart instead of only via `garch/garch_backtest.py` output.
 
 **UI:** "Show Historical Predictions" checkbox in the "⚙️ Chart Controls" sidebar section. Also settable via `?show_historical=1` query string. Off by default.
 
@@ -711,7 +711,7 @@ PORT=8080 python app.py
 
 ```bash
 # 1. Test GARCH model directly
-python -c "from garch_model import forecast_volatility; print(forecast_volatility('AAPL'))"
+python -c "from garch.garch_model import forecast_volatility; print(forecast_volatility('AAPL'))"
 
 # 2. Test chart generation
 python draw.py AAPL --period 6M
@@ -764,10 +764,10 @@ done
 3. **Alternative Models** (GJR-GARCH as a more stable asymmetric option than EGARCH)
 4. **Export Forecasts** as CSV/JSON
 5. **Drift damping** — taper drift to zero over longer forecast horizons (direction accuracy is ~50%/coin-flip at every tested horizon, so the drift term's contribution is questionable for multi-week forecasts)
-6. **QLIKE loss metric** in `backtest_garch.py` — more statistically robust than mean % error for small-sample volatility-forecast validation
+6. **QLIKE loss metric** in `garch/garch_backtest.py` — more statistically robust than mean % error for small-sample volatility-forecast validation
 7. **Ticker-specific or regime-adaptive vol_scale** — backtesting found funds need less correction (9-20pt improvement) than individual stocks (20-23pt) with the same global 0.8× factor
 
-(Already built, no longer "future": walk-forward backtesting tool — see `backtest_garch.py` and the `calibrate-model` skill; Model Accuracy Metrics via AIC/BIC comparison — see fitted-coefficients stats panel.)
+(Already built, no longer "future": walk-forward backtesting tool — see `garch/garch_backtest.py` and the `calibrate-model` skill; Model Accuracy Metrics via AIC/BIC comparison — see fitted-coefficients stats panel.)
 
 ## Dependencies and Versions
 
@@ -791,9 +791,10 @@ pip install flask matplotlib yfinance pandas numpy arch
 ## Files Modified / Created
 
 ### Created
-- `garch_model.py` - GARCH forecasting module
-- `garch_config.py` - Centralized GARCH configuration (training window, valid orders/models, vol_scale defaults, forecast-day mapping, thresholds)
-- `backtest_garch.py` - Walk-forward backtest script (validates model settings across tickers)
+- `garch/` - Volatility forecasting package (`__init__.py` re-exports the common entry points)
+- `garch/garch_model.py` - Production forecaster; supports every `arch` family (ARCH/GARCH/GJR/EGARCH/APARCH/FIGARCH/HARCH) and distribution (normal/t/skewt/ged), reading its per-asset defaults from `get_model_defaults()`
+- `garch/garch_config.py` - Centralized configuration. The block between the `BEGIN/END CALIBRATED DEFAULTS` markers is machine-written by the calibrate-model skill; everything else (valid ranges, UI limits, forecast-day mapping, thresholds) is hand-maintained
+- `garch/garch_backtest.py` - Walk-forward backtest script (validates model settings across tickers)
 - `templates/chart_sidebar.html` - New sidebar UI
 - `database/` - Directory for database file
 - `.claude/skills/calibrate-model/SKILL.md` - Project skill for running calibration backtests on demand
