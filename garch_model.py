@@ -8,6 +8,7 @@ import sqlite3
 from db import DB_PATH
 from garch_config import (
     GARCH_TRAINING_DAYS,
+    CRYPTO_GARCH_TRAINING_DAYS,
     VALID_GARCH_ORDERS,
     DEFAULT_GARCH_P,
     DEFAULT_GARCH_Q,
@@ -16,6 +17,9 @@ from garch_config import (
     DEFAULT_VOL_SCALE,
     MIN_VOL_SCALE,
     MAX_VOL_SCALE,
+    DEFAULT_CRYPTO_VOL_SCALE,
+    MIN_CRYPTO_VOL_SCALE,
+    MAX_CRYPTO_VOL_SCALE,
     DEFAULT_EGARCH_O
 )
 import warnings
@@ -28,7 +32,7 @@ except ImportError:
     ARCH_AVAILABLE = False
 
 
-def get_ticker_returns(ticker, days=252):
+def get_ticker_returns(ticker, days=252, is_crypto=False):
     """Fetch ticker data and calculate log returns."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -36,8 +40,9 @@ def get_ticker_returns(ticker, days=252):
     end_date = datetime.now().date()
     start_date = end_date - timedelta(days=days + 30)
 
-    cursor.execute('''
-        SELECT date, close FROM prices
+    table = 'crypto_prices' if is_crypto else 'prices'
+    cursor.execute(f'''
+        SELECT date, close FROM {table}
         WHERE ticker = ? AND date BETWEEN ? AND ?
         ORDER BY date
     ''', (ticker, start_date, end_date))
@@ -60,7 +65,7 @@ def get_ticker_returns(ticker, days=252):
 # See garch_config.py for full rationale and backtesting details
 
 
-def fit_garch(ticker, p=None, q=None, o=None, vol_model=None, days=None):
+def fit_garch(ticker, p=None, q=None, o=None, vol_model=None, days=None, is_crypto=False):
     """Fit a GARCH or EGARCH model to ticker returns.
 
     Args:
@@ -71,7 +76,8 @@ def fit_garch(ticker, p=None, q=None, o=None, vol_model=None, days=None):
         vol_model: 'garch' (symmetric, default) or 'egarch' (asymmetric)
                    Defaults to config DEFAULT_VOL_MODEL
         days: training data window (in days)
-              Defaults to config GARCH_TRAINING_DAYS
+              Defaults to config GARCH_TRAINING_DAYS (or CRYPTO_GARCH_TRAINING_DAYS for crypto)
+        is_crypto: If True, use crypto data table and crypto training defaults
     """
     # Use config defaults if not specified
     if p is None:
@@ -83,12 +89,12 @@ def fit_garch(ticker, p=None, q=None, o=None, vol_model=None, days=None):
     if vol_model is None:
         vol_model = DEFAULT_VOL_MODEL
     if days is None:
-        days = GARCH_TRAINING_DAYS
+        days = CRYPTO_GARCH_TRAINING_DAYS if is_crypto else GARCH_TRAINING_DAYS
 
     if not ARCH_AVAILABLE:
         return None
 
-    returns = get_ticker_returns(ticker, days)
+    returns = get_ticker_returns(ticker, days, is_crypto=is_crypto)
     if returns is None or len(returns) < 50:
         return None
 
@@ -122,7 +128,7 @@ def extract_coefficients(fitted_model):
     return coeffs
 
 
-def forecast_volatility(ticker, periods=5, p=None, q=None, o=None, vol_model=None, days=None, vol_scale=None):
+def forecast_volatility(ticker, periods=5, p=None, q=None, o=None, vol_model=None, days=None, vol_scale=None, is_crypto=False):
     """Forecast volatility for next N periods using GARCH or EGARCH.
 
     Args:
@@ -130,9 +136,10 @@ def forecast_volatility(ticker, periods=5, p=None, q=None, o=None, vol_model=Non
         p, q: GARCH model order (defaults to config DEFAULT_GARCH_P/Q)
         o: EGARCH asymmetry order (defaults to config DEFAULT_EGARCH_O)
         vol_model: 'garch' or 'egarch' (defaults to config DEFAULT_VOL_MODEL)
-        days: Training window in days (defaults to config GARCH_TRAINING_DAYS)
-        vol_scale: Calibration multiplier (defaults to config DEFAULT_VOL_SCALE)
+        days: Training window in days (defaults to config GARCH_TRAINING_DAYS or CRYPTO_GARCH_TRAINING_DAYS)
+        vol_scale: Calibration multiplier (defaults to config DEFAULT_VOL_SCALE or DEFAULT_CRYPTO_VOL_SCALE)
                    Corrects for GARCH's systematic over-forecast bias (~20-25%)
+        is_crypto: If True, use crypto data and crypto-specific defaults
     """
     # Use config defaults if not specified
     if p is None:
@@ -144,9 +151,9 @@ def forecast_volatility(ticker, periods=5, p=None, q=None, o=None, vol_model=Non
     if vol_model is None:
         vol_model = DEFAULT_VOL_MODEL
     if days is None:
-        days = GARCH_TRAINING_DAYS
+        days = CRYPTO_GARCH_TRAINING_DAYS if is_crypto else GARCH_TRAINING_DAYS
     if vol_scale is None:
-        vol_scale = DEFAULT_VOL_SCALE
+        vol_scale = DEFAULT_CRYPTO_VOL_SCALE if is_crypto else DEFAULT_VOL_SCALE
 
     if not ARCH_AVAILABLE:
         return {
@@ -158,12 +165,20 @@ def forecast_volatility(ticker, periods=5, p=None, q=None, o=None, vol_model=Non
         vol_model = DEFAULT_VOL_MODEL
     if (p, q) not in VALID_GARCH_ORDERS:
         p, q = DEFAULT_GARCH_P, DEFAULT_GARCH_Q
-    try:
-        vol_scale = max(MIN_VOL_SCALE, min(MAX_VOL_SCALE, float(vol_scale)))
-    except (ValueError, TypeError):
-        vol_scale = DEFAULT_VOL_SCALE
 
-    model = fit_garch(ticker, p, q, o, vol_model, days)
+    # Validate vol_scale against crypto or stock limits
+    if is_crypto:
+        try:
+            vol_scale = max(MIN_CRYPTO_VOL_SCALE, min(MAX_CRYPTO_VOL_SCALE, float(vol_scale)))
+        except (ValueError, TypeError):
+            vol_scale = DEFAULT_CRYPTO_VOL_SCALE
+    else:
+        try:
+            vol_scale = max(MIN_VOL_SCALE, min(MAX_VOL_SCALE, float(vol_scale)))
+        except (ValueError, TypeError):
+            vol_scale = DEFAULT_VOL_SCALE
+
+    model = fit_garch(ticker, p, q, o, vol_model, days, is_crypto=is_crypto)
     if model is None:
         return {
             'status': 'error',
@@ -188,7 +203,7 @@ def forecast_volatility(ticker, periods=5, p=None, q=None, o=None, vol_model=Non
         current_vol = float(np.sqrt(model.conditional_volatility[-1]))
 
         # Historical mean return, used as forecast drift (in % per day, same units as returns)
-        returns = get_ticker_returns(ticker, days)
+        returns = get_ticker_returns(ticker, days, is_crypto=is_crypto)
         returns_mean = float(np.mean(returns)) if returns is not None and len(returns) > 0 else 0.0
 
         return {
@@ -217,15 +232,16 @@ def forecast_volatility(ticker, periods=5, p=None, q=None, o=None, vol_model=Non
         }
 
 
-def get_garch_stats(ticker, p=None, q=None, o=None, vol_model=None, days=None):
+def get_garch_stats(ticker, p=None, q=None, o=None, vol_model=None, days=None, is_crypto=False):
     """Get GARCH model statistics, including fitted coefficients.
 
     Args:
-        ticker: Stock ticker symbol
+        ticker: Stock or crypto ticker symbol
         p, q: GARCH model order (defaults to config DEFAULT_GARCH_P/Q)
         o: EGARCH asymmetry order (defaults to config DEFAULT_EGARCH_O)
         vol_model: 'garch' or 'egarch' (defaults to config DEFAULT_VOL_MODEL)
-        days: Training window in days (defaults to config GARCH_TRAINING_DAYS)
+        days: Training window in days (defaults to config GARCH_TRAINING_DAYS or CRYPTO_GARCH_TRAINING_DAYS)
+        is_crypto: If True, use crypto data and crypto-specific defaults
     """
     # Use config defaults if not specified
     if p is None:
@@ -237,7 +253,7 @@ def get_garch_stats(ticker, p=None, q=None, o=None, vol_model=None, days=None):
     if vol_model is None:
         vol_model = DEFAULT_VOL_MODEL
     if days is None:
-        days = GARCH_TRAINING_DAYS
+        days = CRYPTO_GARCH_TRAINING_DAYS if is_crypto else GARCH_TRAINING_DAYS
 
     if not ARCH_AVAILABLE:
         return None
@@ -247,11 +263,11 @@ def get_garch_stats(ticker, p=None, q=None, o=None, vol_model=None, days=None):
     if (p, q) not in VALID_GARCH_ORDERS:
         p, q = DEFAULT_GARCH_P, DEFAULT_GARCH_Q
 
-    model = fit_garch(ticker, p, q, o, vol_model, days=days)
+    model = fit_garch(ticker, p, q, o, vol_model, days=days, is_crypto=is_crypto)
     if model is None:
         return None
 
-    returns = get_ticker_returns(ticker, days)
+    returns = get_ticker_returns(ticker, days, is_crypto=is_crypto)
 
     return {
         'ticker': ticker,

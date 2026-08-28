@@ -125,6 +125,38 @@
             gap: 8px;
         }
 
+        /* Asset Type Tabs */
+        .asset-tabs {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 12px;
+            border-bottom: 2px solid #2a3f5a;
+        }
+
+        .asset-tab-btn {
+            flex: 1;
+            background: transparent;
+            border: none;
+            color: #888;
+            padding: 10px 12px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            border-bottom: 3px solid transparent;
+            margin-bottom: -2px;
+            text-align: center;
+        }
+
+        .asset-tab-btn:hover {
+            color: #aaa;
+        }
+
+        .asset-tab-btn.active {
+            color: #00d84f;
+            border-bottom-color: #00d84f;
+        }
+
         /* Ticker List */
         .ticker-list {
             display: flex;
@@ -135,6 +167,10 @@
             border: 1px solid #2a3f5a;
             border-radius: 4px;
             background-color: #0a0e27;
+        }
+
+        .ticker-list.hidden {
+            display: none;
         }
 
         .ticker-item {
@@ -470,12 +506,29 @@
             </button>
         </div>
 
-        <!-- Ticker Selection -->
+        <!-- Ticker Selection with Asset Type Tabs -->
         <div class="sidebar-section">
             <div class="sidebar-title">📊 Tickers</div>
-            <div class="ticker-list">
+
+            <!-- Asset Type Tabs -->
+            <div class="asset-tabs">
+                <button class="asset-tab-btn {% if asset_type == 'stock' %}active{% endif %}" onclick="switchAssetType('stock')">📈 Stocks</button>
+                <button class="asset-tab-btn {% if asset_type == 'crypto' %}active{% endif %}" onclick="switchAssetType('crypto')">🪙 Crypto</button>
+            </div>
+
+            <!-- Stock Tickers -->
+            <div class="ticker-list {% if asset_type == 'crypto' %}hidden{% endif %}" id="stock-ticker-list">
                 {% for t in tickers %}
-                <a href="{{ url_for('chart', ticker=t, period=period, threshold=threshold_pct, forecast_days=effective_forecast_days, profit_pct=profit_pct, garch_p=garch_p, garch_q=garch_q, vol_model=vol_model, vol_scale=vol_scale) }}" class="ticker-item {% if t == ticker %}active{% endif %}">
+                <a href="{{ url_for('chart', ticker=t, period=period, threshold=threshold_pct, forecast_days=effective_forecast_days, profit_pct=profit_pct, garch_p=garch_p, garch_q=garch_q, vol_model=vol_model, vol_scale=vol_scale, asset_type='stock') }}" class="ticker-item {% if t == ticker and asset_type == 'stock' %}active{% endif %}">
+                    {{ t }}
+                </a>
+                {% endfor %}
+            </div>
+
+            <!-- Crypto Tickers -->
+            <div class="ticker-list {% if asset_type != 'crypto' %}hidden{% endif %}" id="crypto-ticker-list">
+                {% for t in crypto_tickers %}
+                <a href="{{ url_for('chart', ticker=t, period=period, threshold=threshold_pct, forecast_days=effective_forecast_days, profit_pct=profit_pct, garch_p=garch_p, garch_q=garch_q, vol_model=vol_model, vol_scale=vol_scale, asset_type='crypto') }}" class="ticker-item {% if t == ticker and asset_type == 'crypto' %}active{% endif %}">
                     {{ t }}
                 </a>
                 {% endfor %}
@@ -487,7 +540,7 @@
             <div class="sidebar-title">📅 Time Period</div>
             <div class="button-group">
                 {% for p in periods %}
-                <button class="selector-btn {% if p == period %}active{% endif %}" onclick="window.location.href = '{{ url_for('chart', ticker=ticker, period=p, threshold=threshold_pct, forecast_days=effective_forecast_days, profit_pct=profit_pct, garch_p=garch_p, garch_q=garch_q, vol_model=vol_model, vol_scale=vol_scale) }}'">{{ p }}</button>
+                <button class="selector-btn {% if p == period %}active{% endif %}" onclick="window.location.href = '{{ url_for('chart', ticker=ticker, period=p, threshold=threshold_pct, forecast_days=effective_forecast_days, profit_pct=profit_pct, garch_p=garch_p, garch_q=garch_q, vol_model=vol_model, vol_scale=vol_scale, asset_type=asset_type) }}'">{{ p }}</button>
                 {% endfor %}
             </div>
         </div>
@@ -526,6 +579,31 @@
     </div>
 
     <script>
+        // Switch between stocks and crypto tabs
+        function switchAssetType(assetType) {
+            const stockList = document.getElementById('stock-ticker-list');
+            const cryptoList = document.getElementById('crypto-ticker-list');
+            const tabButtons = document.querySelectorAll('.asset-tab-btn');
+
+            // Hide/show ticker lists
+            if (assetType === 'stock') {
+                stockList.classList.remove('hidden');
+                cryptoList.classList.add('hidden');
+            } else {
+                stockList.classList.add('hidden');
+                cryptoList.classList.remove('hidden');
+            }
+
+            // Update tab button states
+            tabButtons.forEach(btn => {
+                btn.classList.remove('active');
+                if ((assetType === 'stock' && btn.textContent.includes('Stocks')) ||
+                    (assetType === 'crypto' && btn.textContent.includes('Crypto'))) {
+                    btn.classList.add('active');
+                }
+            });
+        }
+
         // Update threshold chart in real-time when slider moves
         function updateThresholdChart() {
             const slider = document.getElementById('threshold-slider');
@@ -563,12 +641,26 @@
             params.set('show_historical', showHistoricalPredictions);
             params.set('show_signals', showBuySellSignals);
 
+            // Ensure asset_type is preserved
+            if (!params.has('asset_type')) {
+                params.set('asset_type', '{{ asset_type }}');
+            }
+
             window.location.href = '{{ url_for('chart') }}?' + params.toString();
         }
 
         // Allow Enter key to apply forecast days
         document.getElementById('forecast-input').addEventListener('keypress', function(e) {
             if (e.key === 'Enter') applyChartControls();
+        });
+
+        // Add event listeners for checkboxes to apply controls immediately
+        document.getElementById('show-historical-predictions').addEventListener('change', function() {
+            applyChartControls();
+        });
+
+        document.getElementById('show-buy-sell-signals').addEventListener('change', function() {
+            applyChartControls();
         });
 
         // Refresh Data button: kicks off refresh.py's update logic in the
@@ -648,7 +740,8 @@
             const params = new URLSearchParams({
                 garch_p: '{{ garch_p }}',
                 garch_q: '{{ garch_q }}',
-                vol_model: '{{ vol_model }}'
+                vol_model: '{{ vol_model }}',
+                is_crypto: '{{ "true" if asset_type == "crypto" else "false" }}'
             });
             fetch('/api/garch-stats/' + ticker + '?' + params.toString())
                 .then(r => r.json())

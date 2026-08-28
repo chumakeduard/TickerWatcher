@@ -6,16 +6,23 @@ from io import BytesIO
 import os
 import threading
 from datetime import datetime
-from config import TICKERS
+from config import TICKERS, CRYPTO
 from draw import draw_chart
 from garch_model import forecast_volatility, get_garch_stats
+from logging_config import get_app_logger
+
+logger = get_app_logger()
 from garch_config import (
     VALID_GARCH_ORDERS,
     VALID_VOL_MODELS,
     DEFAULT_VOL_SCALE,
     MIN_VOL_SCALE,
     MAX_VOL_SCALE,
+    DEFAULT_CRYPTO_VOL_SCALE,
+    MIN_CRYPTO_VOL_SCALE,
+    MAX_CRYPTO_VOL_SCALE,
     FORECAST_DAYS_BY_PERIOD,
+    CRYPTO_FORECAST_DAYS_BY_PERIOD,
     DEFAULT_PRICE_MOVE_THRESHOLD,
     MIN_PRICE_MOVE_THRESHOLD,
     MAX_PRICE_MOVE_THRESHOLD,
@@ -29,6 +36,9 @@ app.config['TEMPLATES_AUTO_RELOAD'] = True
 
 # Available options
 PERIODS = ['1D', '5D', '1M', '3M', '6M', 'YTD', '1Y', '5Y', 'MAX']
+# Crypto now keeps full history (see refresh.py update_crypto()), same as stocks,
+# so it supports the same period range.
+CRYPTO_PERIODS = PERIODS
 GROUPINGS = ['daily', 'weekly', 'monthly']
 
 # In-memory cache for generated charts and their data
@@ -49,42 +59,81 @@ def _run_refresh():
     """Runs refresh.py's update logic in a background thread, then clears
     chart caches so subsequent chart requests regenerate with the new data."""
     from db import init_db
-    from refresh import update_ticker
+    from refresh import update_ticker, update_crypto
+    import sqlite3
+
+    logger.info("=" * 70)
+    logger.info("WEB REFRESH INITIATED")
+    logger.info("=" * 70)
 
     try:
         conn = init_db()
         try:
+            # Update stocks and track record counts
+            logger.info(f"Updating {len(TICKERS)} stock tickers...")
             for ticker in TICKERS:
+                cursor = conn.cursor()
+                cursor.execute("SELECT COUNT(*) FROM prices WHERE ticker = ?", (ticker,))
+                before = cursor.fetchone()[0]
+
                 update_ticker(conn, ticker)
+
+                cursor.execute("SELECT COUNT(*) FROM prices WHERE ticker = ?", (ticker,))
+                after = cursor.fetchone()[0]
+                records_added = after - before
+                if records_added > 0:
+                    logger.info(f"  {ticker}: +{records_added} records")
+
+            # Update crypto and track record counts
+            logger.info(f"Updating {len(CRYPTO)} crypto tickers...")
+            for ticker in CRYPTO:
+                cursor = conn.cursor()
+                cursor.execute("SELECT COUNT(*) FROM crypto_prices WHERE ticker = ?", (ticker,))
+                before = cursor.fetchone()[0]
+
+                update_crypto(conn, ticker)
+
+                cursor.execute("SELECT COUNT(*) FROM crypto_prices WHERE ticker = ?", (ticker,))
+                after = cursor.fetchone()[0]
+                records_added = after - before
+                if records_added > 0:
+                    logger.info(f"  {ticker}: +{records_added} records")
+
         finally:
             conn.close()
 
         # Force charts (and their cached tooltip data) to regenerate on next view
         chart_cache.clear()
         chart_data_cache.clear()
+        logger.info("Chart cache cleared, ready for regeneration")
 
         with refresh_lock:
             refresh_state['running'] = False
             refresh_state['last_result'] = 'success'
             refresh_state['last_run'] = datetime.now().isoformat()
             refresh_state['error'] = None
+            logger.info("Refresh completed successfully")
+            logger.info("=" * 70)
     except Exception as e:
         with refresh_lock:
             refresh_state['running'] = False
             refresh_state['last_result'] = 'error'
             refresh_state['error'] = str(e)
+            logger.error(f"Refresh failed: {e}", exc_info=True)
+            logger.info("=" * 70)
 
 
 def get_chart_key(ticker, period, grouping, threshold_pct=10.0, forecast_days=None, garch_p=1, garch_q=1,
-                   vol_model='garch', vol_scale=0.8, show_historical=False, profit_pct=10.0, show_signals=False):
+                   vol_model='garch', vol_scale=0.8, show_historical=False, profit_pct=10.0, show_signals=False, asset_type='stock'):
     """Generate cache key for chart, including parameters that affect rendering."""
     if forecast_days is None:
-        forecast_days = get_forecast_days(period)
+        forecast_days = get_forecast_days(period, asset_type=asset_type)
     # Include threshold, forecast_days, profit_pct, GARCH order, vol_model, vol_scale, show_historical, and show_signals
     # in the key so cache doesn't serve a stale chart when only these params change
     hist_suffix = "_hist" if show_historical else ""
     sig_suffix = "_sig" if show_signals else ""
-    return f"{ticker}_{period.lower()}_{grouping}_th{threshold_pct:.1f}_fd{forecast_days}_pr{profit_pct:.1f}_p{garch_p}q{garch_q}_{vol_model}_vs{vol_scale:.2f}{hist_suffix}{sig_suffix}"
+    asset_suffix = "_crypto" if asset_type == 'crypto' else ""
+    return f"{ticker}_{period.lower()}_{grouping}_th{threshold_pct:.1f}_fd{forecast_days}_pr{profit_pct:.1f}_p{garch_p}q{garch_q}_{vol_model}_vs{vol_scale:.2f}{hist_suffix}{sig_suffix}{asset_suffix}"
 
 
 def get_garch_order(p_val, q_val):
@@ -105,20 +154,40 @@ def get_vol_model(val):
     return val if val in VALID_VOL_MODELS else 'garch'
 
 
-def get_vol_scale(val):
+def get_vol_scale(val, asset_type='stock'):
     """Parse and validate volatility calibration multiplier from query string.
 
     Default from garch_config.DEFAULT_VOL_SCALE (0.8) — backtesting found
     GARCH(1,1) consistently over-forecasts realized volatility by ~20-25%.
+    Crypto uses DEFAULT_CRYPTO_VOL_SCALE (0.9) with different limits.
     """
-    try:
-        scale = float(val) if val else DEFAULT_VOL_SCALE
-    except (ValueError, TypeError):
-        return DEFAULT_VOL_SCALE
-    return max(MIN_VOL_SCALE, min(MAX_VOL_SCALE, scale))
+    if asset_type == 'crypto':
+        try:
+            scale = float(val) if val else DEFAULT_CRYPTO_VOL_SCALE
+        except (ValueError, TypeError):
+            return DEFAULT_CRYPTO_VOL_SCALE
+        return max(MIN_CRYPTO_VOL_SCALE, min(MAX_CRYPTO_VOL_SCALE, scale))
+    else:
+        try:
+            scale = float(val) if val else DEFAULT_VOL_SCALE
+        except (ValueError, TypeError):
+            return DEFAULT_VOL_SCALE
+        return max(MIN_VOL_SCALE, min(MAX_VOL_SCALE, scale))
 
 
-def get_chart_data_for_tooltip(ticker, period_days):
+def get_forecast_days(period, asset_type='stock'):
+    """Get forecast days for given period and asset type.
+
+    Stocks use longer forecast horizons (3-21 days).
+    Crypto uses shorter horizons (2-7 days) due to shorter data retention (20 days).
+    """
+    if asset_type == 'crypto':
+        return CRYPTO_FORECAST_DAYS_BY_PERIOD.get(period, 5)
+    else:
+        return FORECAST_DAYS_BY_PERIOD.get(period, 14)
+
+
+def get_chart_data_for_tooltip(ticker, period_days, is_crypto=False):
     """Get OHLC data for chart tooltips."""
     import sqlite3
     from db import DB_PATH
@@ -131,9 +200,10 @@ def get_chart_data_for_tooltip(ticker, period_days):
     end_date = datetime.now().date()
     start_date = end_date - timedelta(days=period_days)
 
-    cursor.execute('''
+    table = 'crypto_prices' if is_crypto else 'prices'
+    cursor.execute(f'''
         SELECT date, open, high, low, close, volume
-        FROM prices
+        FROM {table}
         WHERE ticker = ? AND date BETWEEN ? AND ?
         ORDER BY date
     ''', (ticker, start_date, end_date))
@@ -157,7 +227,7 @@ def get_chart_data_for_tooltip(ticker, period_days):
 
 def ensure_chart_exists(ticker, period, grouping='daily', threshold_pct=10.0, forecast_days_override=None,
                          garch_p=1, garch_q=1, vol_model='garch', vol_scale=0.8, show_historical=False, profit_pct=10.0,
-                         show_signals=False):
+                         show_signals=False, asset_type='stock'):
     """Generate and cache chart if it doesn't exist in cache.
 
     Args:
@@ -168,20 +238,21 @@ def ensure_chart_exists(ticker, period, grouping='daily', threshold_pct=10.0, fo
         show_historical: If True, overlay historical predictions on the chart
         profit_pct: Profit target % for marking forecast candles that hit targets
         show_signals: If True, show buy/sell signals on all forecast candles
+        asset_type: 'stock' (default) or 'crypto'
     """
     # Determine the actual forecast_days to use
     forecast_days = forecast_days_override
     if forecast_days is None:
-        forecast_days = get_forecast_days(period)
+        forecast_days = get_forecast_days(period, asset_type=asset_type)
     else:
         try:
             forecast_days = int(forecast_days_override)
         except (ValueError, TypeError):
-            forecast_days = get_forecast_days(period)
+            forecast_days = get_forecast_days(period, asset_type=asset_type)
 
     cache_key = get_chart_key(ticker, period, grouping, threshold_pct=threshold_pct, forecast_days=forecast_days,
                                garch_p=garch_p, garch_q=garch_q, vol_model=vol_model, vol_scale=vol_scale,
-                               show_historical=show_historical, profit_pct=profit_pct, show_signals=show_signals)
+                               show_historical=show_historical, profit_pct=profit_pct, show_signals=show_signals, asset_type=asset_type)
 
     if cache_key not in chart_cache:
         try:
@@ -190,7 +261,7 @@ def ensure_chart_exists(ticker, period, grouping='daily', threshold_pct=10.0, fo
                 ticker, period, period_days, grouping,
                 include_forecast=True, forecast_days=forecast_days, threshold_pct=threshold_pct,
                 garch_p=garch_p, garch_q=garch_q, vol_model=vol_model, vol_scale=vol_scale,
-                show_historical=show_historical, profit_pct=profit_pct, show_signals=show_signals
+                show_historical=show_historical, profit_pct=profit_pct, show_signals=show_signals, is_crypto=(asset_type=='crypto')
             )
             # Unpack chart bytes, predictions data, and axis metadata
             if isinstance(result, tuple):
@@ -206,7 +277,7 @@ def ensure_chart_exists(ticker, period, grouping='daily', threshold_pct=10.0, fo
             chart_cache[cache_key] = chart_bytes
             # Also cache the data for tooltips, predictions, and axis metadata
             chart_data_cache[cache_key] = {
-                'ohlcv': get_chart_data_for_tooltip(ticker, period_days),
+                'ohlcv': get_chart_data_for_tooltip(ticker, period_days, is_crypto=(asset_type == 'crypto')),
                 'predictions': predictions_data,
                 'meta': chart_meta
             }
@@ -236,26 +307,6 @@ def get_period_days(period):
     return period_map.get(period, 180)
 
 
-def get_forecast_days(period):
-    """Map period to forecast days.
-
-    - 1D → 3 days
-    - 5D → 5 days
-    - 1M/3M/6M → 14 days
-    - YTD/1Y/5Y/MAX → 21 days
-    """
-    period_map = {
-        '1D': 3,
-        '5D': 5,
-        '1M': 14,
-        '3M': 14,
-        '6M': 14,
-        'YTD': 21,
-        '1Y': 21,
-        '5Y': 21,
-        'MAX': 21
-    }
-    return period_map.get(period, 14)
 
 
 def get_threshold_pct(query_val):
@@ -278,14 +329,19 @@ def get_profit_pct(query_val):
 
 @app.route('/')
 def index():
-    """Home page - redirect to first ticker."""
-    return redirect(url_for('chart', ticker=TICKERS[0]))
+    """Home page - redirect to first stock ticker."""
+    return redirect(url_for('chart', ticker=TICKERS[0], asset_type='stock'))
 
 
 @app.route('/chart')
 def chart():
-    """Display chart for selected ticker."""
-    ticker = request.args.get('ticker', TICKERS[0]).upper()
+    """Display chart for selected ticker (stock or crypto)."""
+    # Determine asset type and get appropriate default ticker
+    asset_type = request.args.get('asset_type', 'stock')  # 'stock' or 'crypto'
+    all_tickers = CRYPTO if asset_type == 'crypto' else TICKERS
+    default_ticker = all_tickers[0] if all_tickers else TICKERS[0]
+
+    ticker = request.args.get('ticker', default_ticker).upper()
     period = request.args.get('period', '6M')
     grouping = 'daily'  # Always use daily grouping
     threshold_pct = get_threshold_pct(request.args.get('threshold', '10'))
@@ -293,14 +349,16 @@ def chart():
     profit_pct = get_profit_pct(request.args.get('profit_pct'))
     garch_p, garch_q = get_garch_order(request.args.get('garch_p'), request.args.get('garch_q'))
     vol_model = get_vol_model(request.args.get('vol_model'))
-    vol_scale = get_vol_scale(request.args.get('vol_scale'))
+    vol_scale = get_vol_scale(request.args.get('vol_scale'), asset_type=asset_type)
     show_historical = request.args.get('show_historical', '0') == '1'
     show_signals = request.args.get('show_signals', '0') == '1'
 
-    # Validate inputs
-    if ticker not in TICKERS:
-        ticker = TICKERS[0]
-    if period not in PERIODS:
+    # Validate ticker belongs to the correct asset type
+    if ticker not in all_tickers:
+        ticker = default_ticker
+
+    available_periods = CRYPTO_PERIODS if asset_type == 'crypto' else PERIODS
+    if period not in available_periods:
         period = '6M'
 
     # Calculate the effective forecast_days that will be used
@@ -308,15 +366,16 @@ def chart():
         try:
             effective_forecast_days = int(forecast_days_override)
         except (ValueError, TypeError):
-            effective_forecast_days = get_forecast_days(period)
+            effective_forecast_days = get_forecast_days(period, asset_type=asset_type)
     else:
-        effective_forecast_days = get_forecast_days(period)
+        effective_forecast_days = get_forecast_days(period, asset_type=asset_type)
 
     # Ensure chart exists in cache, passing threshold, forecast_days, profit_pct, show_signals, and GARCH model settings
     chart_key = ensure_chart_exists(ticker, period, grouping, threshold_pct=threshold_pct,
                                    forecast_days_override=forecast_days_override,
                                    garch_p=garch_p, garch_q=garch_q, vol_model=vol_model, vol_scale=vol_scale,
-                                   show_historical=show_historical, profit_pct=profit_pct, show_signals=show_signals)
+                                   show_historical=show_historical, profit_pct=profit_pct, show_signals=show_signals,
+                                   asset_type=asset_type)
 
     if not chart_key:
         error_msg = f"Could not generate chart for {ticker}"
@@ -327,7 +386,9 @@ def chart():
                           period=period,
                           chart_key=chart_key,
                           tickers=TICKERS,
-                          periods=PERIODS,
+                          crypto_tickers=CRYPTO,
+                          periods=available_periods,
+                          asset_type=asset_type,
                           threshold_pct=threshold_pct,
                           forecast_days_override=forecast_days_override,
                           effective_forecast_days=effective_forecast_days,
@@ -392,36 +453,42 @@ def serve_chart_image(chart_key):
 
 @app.route('/api/garch/<ticker>')
 def api_garch(ticker):
-    """Get GARCH volatility forecast for a ticker."""
+    """Get GARCH volatility forecast for a ticker (stock or crypto)."""
     ticker = ticker.upper()
+    is_crypto = request.args.get('is_crypto', '').lower() == 'true' or ticker in CRYPTO
 
-    if ticker not in TICKERS:
+    valid_tickers = CRYPTO if is_crypto else TICKERS
+    if ticker not in valid_tickers:
         return {'error': f'Invalid ticker: {ticker}'}, 400
 
     periods = request.args.get('periods', 5, type=int)
     garch_p, garch_q = get_garch_order(request.args.get('garch_p'), request.args.get('garch_q'))
     vol_model = get_vol_model(request.args.get('vol_model'))
+    vol_scale = get_vol_scale(request.args.get('vol_scale'), asset_type='crypto' if is_crypto else 'stock')
 
-    result = forecast_volatility(ticker, periods=periods, p=garch_p, q=garch_q, vol_model=vol_model)
+    result = forecast_volatility(ticker, periods=periods, p=garch_p, q=garch_q, vol_model=vol_model,
+                                  vol_scale=vol_scale, is_crypto=is_crypto)
     return result
 
 
 @app.route('/api/garch-stats/<ticker>')
 def api_garch_stats(ticker):
-    """Get GARCH model statistics for a ticker, including fitted coefficients.
+    """Get GARCH model statistics for a ticker (stock or crypto), including fitted coefficients.
 
-    Accepts optional ?garch_p=&garch_q=&vol_model= query params to match the
-    model settings the chart itself was generated with.
+    Accepts optional ?garch_p=&garch_q=&vol_model=&is_crypto= query params to match
+    the model settings the chart itself was generated with.
     """
     ticker = ticker.upper()
+    is_crypto = request.args.get('is_crypto', '').lower() == 'true' or ticker in CRYPTO
 
-    if ticker not in TICKERS:
+    valid_tickers = CRYPTO if is_crypto else TICKERS
+    if ticker not in valid_tickers:
         return {'error': f'Invalid ticker: {ticker}'}, 400
 
     garch_p, garch_q = get_garch_order(request.args.get('garch_p'), request.args.get('garch_q'))
     vol_model = get_vol_model(request.args.get('vol_model'))
 
-    stats = get_garch_stats(ticker, p=garch_p, q=garch_q, vol_model=vol_model)
+    stats = get_garch_stats(ticker, p=garch_p, q=garch_q, vol_model=vol_model, is_crypto=is_crypto)
     # Note: get_garch_stats reports current/average/max realized volatility from the
     # model fit itself (not a forward forecast), so vol_scale calibration doesn't apply here
 
@@ -473,4 +540,9 @@ def api_refresh_status():
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
+    logger.info("=" * 70)
+    logger.info(f"TickerWatcher starting on port {port}")
+    logger.info(f"Stocks: {len(TICKERS)} tickers")
+    logger.info(f"Crypto: {len(CRYPTO)} tickers")
+    logger.info("=" * 70)
     app.run(debug=True, host='0.0.0.0', port=port)

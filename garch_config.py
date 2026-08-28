@@ -15,6 +15,13 @@ Modify these values to tune the model behavior across the entire application.
 # Default: 1825 days = 5 years (recommended for production)
 GARCH_TRAINING_DAYS = 1825
 
+# Crypto training window (in days)
+# Crypto now keeps full history (same retention policy as stocks — see
+# refresh.py update_crypto()), so it uses the same 5-year default window.
+# Crypto trades 7 days/week (no market closures), so this window actually
+# contains more data points than the stock window over the same calendar span.
+CRYPTO_GARCH_TRAINING_DAYS = 1825
+
 # ============================================================================
 # MODEL ORDER (p, q)
 # ============================================================================
@@ -64,6 +71,14 @@ MIN_VOL_SCALE = 0.3
 MAX_VOL_SCALE = 2.0
 UI_MAX_VOL_SCALE = 1.5  # Slider limit (can go higher via query string)
 
+# Crypto volatility calibration (separate from stocks)
+# Crypto typically has higher volatility and different dynamics
+# Start with 0.9× (less aggressive correction than stocks)
+DEFAULT_CRYPTO_VOL_SCALE = 0.9
+MIN_CRYPTO_VOL_SCALE = 0.3
+MAX_CRYPTO_VOL_SCALE = 2.0
+UI_MAX_CRYPTO_VOL_SCALE = 1.5
+
 # ============================================================================
 # EGARCH ASYMMETRY ORDER
 # ============================================================================
@@ -91,6 +106,20 @@ FORECAST_DAYS_BY_PERIOD = {
     '1Y': 21,     # 1-year chart → 1-month forecast
     '5Y': 21,     # 5-year chart → 1-month forecast
     'MAX': 21     # Max history → 1-month forecast
+}
+
+# Crypto forecast periods (shorter horizons due to shorter data window)
+# Progressively longer forecasts for longer periods to show variation
+CRYPTO_FORECAST_DAYS_BY_PERIOD = {
+    '1D': 2,      # 1-day chart → 2-day forecast (crypto)
+    '5D': 3,      # 5-day chart → 3-day forecast (crypto)
+    '1M': 5,      # 1-month chart → 5-day forecast (crypto)
+    '3M': 7,      # 3-month chart → 7-day forecast (crypto)
+    '6M': 7,      # 6-month chart → 7-day forecast (crypto)
+    'YTD': 10,    # YTD chart → 10-day forecast (crypto)
+    '1Y': 10,     # 1-year chart → 10-day forecast (crypto)
+    '5Y': 14,     # 5-year chart → 14-day forecast (crypto)
+    'MAX': 14     # Max history → 14-day forecast (crypto)
 }
 
 # ============================================================================

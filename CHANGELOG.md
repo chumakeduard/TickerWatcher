@@ -4,6 +4,38 @@ Running log of every bug found, fixed, and feature added, in chronological order
 
 ---
 
+## 2026-08-28 (Cryptocurrency Support)
+
+### Feature: Crypto Monitoring (BTC, ETH)
+
+Added cryptocurrency price tracking and GARCH forecasting alongside stocks, with its own database table, GARCH configuration, and a sidebar tab to switch between the two.
+
+**Database (`db.py`):** New `crypto_prices` table (same schema as `prices`, separate for data isolation). All read/write helpers (`get_last_price_date()`, `fetch_and_store_prices()`, `get_stats()`, `needs_backfill()`) take an `is_crypto` flag to pick the right table. Crypto tickers are fetched from Yahoo Finance as `<TICKER>-USD`.
+
+**Refresh (`refresh.py`):** `update_crypto()` mirrors `update_ticker()` — delta sync (only fetches the gap between the last stored date and today) plus a full backfill on first run. Crypto keeps **full history** (as far back as Yahoo Finance has it — BTC-USD since 2014-09-17, ETH-USD since 2017-11-09), the same retention policy as stocks; an earlier version of this that pruned crypto to a rolling 20-day window was abandoned once it became clear it made the period selector (`1Y`/`5Y`/`MAX`) meaningless for crypto (see bug below).
+
+**GARCH config (`garch_config.py`):** Crypto gets its own `CRYPTO_MIN_YEARS` (15, vs stocks' `MIN_YEARS` 50 — plenty for any crypto's actual listing history) and `DEFAULT_CRYPTO_VOL_SCALE` (0.9×, vs stocks' 0.8×, separately configurable). Training window (`CRYPTO_GARCH_TRAINING_DAYS`) and forecast-day mapping now match stocks' 5-year window; `CRYPTO_FORECAST_DAYS_BY_PERIOD` stays deliberately shorter (2-14 days vs stocks' 3-21) as a forecast-horizon choice, not a data limitation.
+
+**App routing (`app.py`):** New `?asset_type=stock|crypto` query param threads through chart generation, caching (cache keys include asset type), and the sidebar. `/api/garch/<ticker>` and `/api/garch-stats/<ticker>` now accept crypto tickers (auto-detected, or via `?is_crypto=true`).
+
+**UI (`templates/chart_sidebar.html`):** Added a "📈 Stocks" / "🪙 Crypto" tab pair above the ticker list; switching tabs swaps the ticker list and all navigation links carry `asset_type` forward (period buttons, ticker links, chart-control checkboxes).
+
+### Bugs found and fixed during crypto rollout
+
+1. **Period selector for crypto only ever showed ~20-25 days, no matter which period was picked.** Root cause was the (later abandoned) 20-day retention window — `1Y`/`5Y`/`MAX` all silently rendered the same handful of days. Fixed by switching crypto to full-history retention (see above), which also required reverting several crypto-specific shortcuts (GARCH min-training-data floor, historical-prediction fit window/step, SQL row limits) back to stock-identical values now that the data volume is comparable.
+
+2. **Historical-predictions overlay and buy/sell-signal checkboxes appeared to do nothing for crypto.** The overlay's `len(dates) > 50` gate and the internal GARCH fit's `min_train = 50` requirement were both unreachable with only ~20-25 crypto rows on hand. (Buy/sell signals were actually working correctly all along — with the default 10% profit target, BTC's simulated path just didn't cross it within a short forecast window; confirmed by testing with a lower target.)
+
+3. **No tooltips on crypto charts.** `get_chart_data_for_tooltip()` always queried the `prices` table, never `crypto_prices`, so the tooltip cache was silently empty for every crypto chart. Added an `is_crypto` parameter.
+
+4. **Pre-existing bug, not crypto-specific: `update_ticker()`/`update_crypto()` in `refresh.py` returned early on "already up to date" *before* ever checking `needs_backfill()`.** A ticker current on recent data but short on backfilled history (e.g. right after being added) would never get backfilled past its first, possibly partial, fetch. Also, the backfill fetch used `get_last_price_date()` (MAX date) as its end boundary instead of the true earliest stored date — added `get_earliest_price_date()` (MIN date) in `db.py` and fixed the boundary. This is what let BTC/ETH actually backfill to their full 2014/2017 history once the retention policy changed.
+
+5. **Legend covering candlesticks.** The "Predicted OHLC (historical)" / "Predicted trend (smoothed)" legend for the historical-predictions overlay sat at `loc='lower right'` *inside* the price chart, on top of the candles. Moved it to a figure-level legend anchored just below the price chart's x-axis (in the existing gridspec gap before the volume panel) — discovered along the way that an Axes-level legend with a `bbox_to_anchor` point outside that axes still gets silently clipped to the axes' box, so the fix had to switch to `fig.legend()`.
+
+**Files touched:** `db.py`, `config.py`, `refresh.py`, `garch_config.py`, `garch_model.py`, `draw.py`, `app.py`, `templates/chart_sidebar.html`.
+
+---
+
 ## 2026-08-26 (Buy/Sell Trading Signals & Profit Targets)
 
 ### Feature: Profit Target Marking

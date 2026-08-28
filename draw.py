@@ -14,11 +14,11 @@ import matplotlib.patches as mpatches
 from matplotlib.patches import Rectangle
 import sqlite3
 from db import DB_PATH
-from garch_config import GARCH_TRAINING_DAYS
+from garch_config import GARCH_TRAINING_DAYS, CRYPTO_GARCH_TRAINING_DAYS
 
 
-def get_ticker_data(ticker, period_days):
-    """Fetch ticker data from database."""
+def get_ticker_data(ticker, period_days, is_crypto=False):
+    """Fetch ticker data from database (stocks or crypto)."""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
@@ -26,9 +26,10 @@ def get_ticker_data(ticker, period_days):
     end_date = datetime.now().date()
     start_date = end_date - timedelta(days=period_days)
 
-    cursor.execute('''
+    table = 'crypto_prices' if is_crypto else 'prices'
+    cursor.execute(f'''
         SELECT date, open, high, low, close, volume
-        FROM prices
+        FROM {table}
         WHERE ticker = ? AND date BETWEEN ? AND ?
         ORDER BY date
     ''', (ticker, start_date, end_date))
@@ -37,7 +38,7 @@ def get_ticker_data(ticker, period_days):
     conn.close()
 
     if not rows:
-        print(f"No data found for {ticker}")
+        print(f"No data found for {ticker} in {table}")
         sys.exit(1)
 
     dates = [row['date'] for row in rows]
@@ -50,7 +51,7 @@ def get_ticker_data(ticker, period_days):
     return dates, opens, highs, lows, closes, volumes
 
 
-def compute_historical_predictions(ticker, dates, closes, garch_p, garch_q, vol_model, vol_scale=0.8, step=None):
+def compute_historical_predictions(ticker, dates, closes, garch_p, garch_q, vol_model, vol_scale=0.8, step=None, is_crypto=False):
     """Compute per-day OHLC prediction candles covering the ENTIRE displayed
     historical period (not just a sparse sample), so the overlay spans the same
     left-to-right range as the main chart — plus a smoothed trend line derived
@@ -95,8 +96,9 @@ def compute_historical_predictions(ticker, dates, closes, garch_p, garch_q, vol_
 
     # Minimum rows required for a usable GARCH fit (checked per-window against the DB,
     # which typically holds years of history before the displayed period even starts —
-    # see config.py MIN_YEARS — so this does NOT limit how far back predictions can begin
-    # within the displayed chart itself).
+    # see config.py MIN_YEARS / CRYPTO_MIN_YEARS — so this does NOT limit how far back
+    # predictions can begin within the displayed chart itself). Crypto now keeps the
+    # same full-history retention as stocks, so it uses the same floor.
     min_train = 50
     empty_result = {'candles': [], 'line': []}
     if n < 2:
@@ -131,8 +133,9 @@ def compute_historical_predictions(ticker, dates, closes, garch_p, garch_q, vol_
         cutoff_date = dates[w_start]
 
         try:
-            cursor.execute('''
-                SELECT date, close FROM prices
+            table = 'crypto_prices' if is_crypto else 'prices'
+            cursor.execute(f'''
+                SELECT date, close FROM {table}
                 WHERE ticker = ? AND date <= ?
                 ORDER BY date DESC LIMIT 1825
             ''', (ticker, cutoff_date))
@@ -242,7 +245,7 @@ def get_price_stats(opens, highs, lows, closes, volumes):
 
 def draw_chart(ticker, period_name, period_days, grouping='daily', include_forecast=True, forecast_days=14,
                 threshold_pct=10.0, garch_p=1, garch_q=1, vol_model='garch', vol_scale=0.8, show_historical=False,
-                profit_pct=10.0, show_signals=False):
+                profit_pct=10.0, show_signals=False, is_crypto=False):
     """Generate professional stock chart image with optional GARCH forecast and historical predictions.
 
     Args:
@@ -262,7 +265,7 @@ def draw_chart(ticker, period_name, period_days, grouping='daily', include_forec
     """
 
     # Fetch data
-    dates, opens, highs, lows, closes, volumes = get_ticker_data(ticker, period_days)
+    dates, opens, highs, lows, closes, volumes = get_ticker_data(ticker, period_days, is_crypto=is_crypto)
     stats = get_price_stats(opens, highs, lows, closes, volumes)
 
     # Identify days with significant price moves (drops/rises > threshold)
@@ -293,8 +296,10 @@ def draw_chart(ticker, period_name, period_days, grouping='daily', include_forec
             from garch_model import forecast_volatility as garch_forecast_func
             from datetime import timedelta
 
-            forecast_result = garch_forecast_func(ticker, periods=forecast_days, days=GARCH_TRAINING_DAYS,
-                                                   p=garch_p, q=garch_q, vol_model=vol_model, vol_scale=vol_scale)
+            from garch_config import CRYPTO_GARCH_TRAINING_DAYS
+            days_for_training = CRYPTO_GARCH_TRAINING_DAYS if is_crypto else GARCH_TRAINING_DAYS
+            forecast_result = garch_forecast_func(ticker, periods=forecast_days, days=days_for_training,
+                                                   p=garch_p, q=garch_q, vol_model=vol_model, vol_scale=vol_scale, is_crypto=is_crypto)
             if forecast_result.get('status') == 'success':
                 current_price = closes[-1]
 
@@ -370,21 +375,13 @@ def draw_chart(ticker, period_name, period_days, grouping='daily', include_forec
     ax_volume = fig.add_subplot(gs[8:10, :])
 
     # ===== HEADER =====
-    header_text = f"{ticker} — Stock Price"
-    price_text = f"${stats['current']:.2f}"
-    change_color = '#00d84f' if stats['change'] >= 0 else '#ff3333'
-    change_text = f"{stats['change']:+.2f} ({stats['change_pct']:+.2f}%)"
+    # Simplified header: ticker only (price/change shown in bottom-right stats box)
+    header_text = f"{ticker}"
 
-    ax_header.text(0.02, 0.6, header_text, fontsize=18, fontweight='bold',
-                   color='white', va='top', transform=ax_header.transAxes)
-    ax_header.text(0.02, 0.1, price_text, fontsize=24, fontweight='bold',
-                   color='white', va='top', transform=ax_header.transAxes)
-    ax_header.text(0.15, 0.2, change_text, fontsize=14, fontweight='bold',
-                   color=change_color, va='top', transform=ax_header.transAxes)
-    ax_header.text(0.35, 0.2, "Market Open", fontsize=11, color='#888888',
-                   va='top', transform=ax_header.transAxes)
+    ax_header.text(0.02, 0.5, header_text, fontsize=16, fontweight='bold',
+                   color='white', va='center', transform=ax_header.transAxes)
 
-    # Time period buttons
+    # Time period buttons (1D, 5D, 1M, 3M, 6M, YTD, 1Y, 5Y, MAX)
     periods = ['1D', '5D', '1M', '3M', '6M', 'YTD', '1Y', '5Y', 'MAX']
     button_x = 0.5
     for i, p in enumerate(periods):
@@ -393,18 +390,6 @@ def draw_chart(ticker, period_name, period_days, grouping='daily', include_forec
         weight = 'bold' if p == period_name else 'normal'
         ax_header.text(x_pos, 0.15, p, fontsize=9, fontweight=weight,
                       color=color, va='center', transform=ax_header.transAxes)
-
-    # SMA indicators
-    ax_header.text(0.5, 0.5, "SMA 20", fontsize=9, color='#888888',
-                   transform=ax_header.transAxes)
-    ax_header.text(0.58, 0.5, "SMA 50", fontsize=9, color='#888888',
-                   transform=ax_header.transAxes)
-    ax_header.text(0.66, 0.5, "SMA 200", fontsize=9, color='#888888',
-                   transform=ax_header.transAxes)
-
-    # Ticker selector
-    ax_header.text(0.88, 0.4, f"{ticker} ▾", fontsize=11, color='white',
-                   fontweight='bold', transform=ax_header.transAxes)
 
     # ===== CANDLESTICK CHART =====
     ax_chart.set_facecolor('#1a1a1a')
@@ -511,7 +496,7 @@ def draw_chart(ticker, period_name, period_days, grouping='daily', include_forec
     pred_lows = []
     if show_historical and len(dates) > 50:
         try:
-            hist_result = compute_historical_predictions(ticker, dates, closes, garch_p, garch_q, vol_model, vol_scale=vol_scale)
+            hist_result = compute_historical_predictions(ticker, dates, closes, garch_p, garch_q, vol_model, vol_scale=vol_scale, is_crypto=is_crypto)
             hist_candles = hist_result.get('candles', [])
             hist_line = hist_result.get('line', [])
 
@@ -568,12 +553,21 @@ def draw_chart(ticker, period_name, period_days, grouping='daily', include_forec
                         entry.update(forecast_ohlc_by_index[f_index])
                 historical_predictions = list(merged.values())
 
-                # Legend: proxy patch for candles + the actual line handle
+                # Legend: proxy patch for candles + the actual line handle.
+                # Placed at the figure level (not ax_chart.legend()) and anchored to
+                # ax_chart's actual bottom-right corner, just below its x-axis in the
+                # gridspec gap before the volume panel — an Axes-level legend with a
+                # bbox_to_anchor point outside the axes still gets clipped to that
+                # axes' box, which silently squashed it to nothing there. This used
+                # to sit at 'lower right' *inside* the plot, on top of the candlesticks.
                 legend_patch = Rectangle((0, 0), 1, 1, facecolor='#4a90e2', edgecolor='#4a90e2', alpha=0.5)
                 line_handle = plt.Line2D([0], [0], color='#4a90e2', linewidth=1.8, linestyle=':')
-                ax_chart.legend([legend_patch, line_handle],
-                                ['Predicted OHLC (historical)', 'Predicted trend (smoothed)'],
-                                loc='lower right', fontsize=9, framealpha=0.85)
+                chart_pos = ax_chart.get_position()
+                fig.legend([legend_patch, line_handle],
+                          ['Predicted OHLC (historical)', 'Predicted trend (smoothed)'],
+                          loc='upper right', bbox_to_anchor=(chart_pos.x1, chart_pos.y0 - 0.01),
+                          bbox_transform=fig.transFigure,
+                          ncol=2, fontsize=9, frameon=False, labelcolor='white')
         except Exception:
             pass  # Silently skip if historical predictions fail
 
