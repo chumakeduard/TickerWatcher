@@ -303,6 +303,76 @@
             border-top: 1px solid #2a3f5a;
         }
 
+        /* Forecast Table */
+        .forecast-table-container {
+            margin-top: 20px;
+            padding: 15px 0;
+            border-top: 1px solid #2a3f5a;
+        }
+
+        .forecast-table-title {
+            color: #00d84f;
+            font-size: 13px;
+            font-weight: 600;
+            margin-bottom: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .forecast-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+            background-color: #1a1f35;
+        }
+
+        .forecast-table thead {
+            background-color: #0a0e27;
+            border-bottom: 2px solid #2a3f5a;
+        }
+
+        .forecast-table th {
+            padding: 10px 8px;
+            text-align: left;
+            color: #00d84f;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-size: 10px;
+            cursor: pointer;
+            user-select: none;
+            position: relative;
+        }
+
+        .forecast-table th:hover {
+            background-color: #1a2838;
+            transition: background-color 0.2s;
+        }
+
+        .forecast-table td {
+            padding: 10px 8px;
+            border-bottom: 1px solid #2a3f5a;
+            color: #e0e0e0;
+        }
+
+        .forecast-table tbody tr:hover {
+            background-color: #223344;
+        }
+
+        .forecast-table tbody tr:last-child td {
+            border-bottom: none;
+        }
+
+        .forecast-table .price-up {
+            color: #00d84f;
+            font-weight: 600;
+        }
+
+        .forecast-table .price-down {
+            color: #ff3333;
+            font-weight: 600;
+        }
+
         /* GARCH Stats Panel */
         .garch-panel {
             background-color: #1a2838;
@@ -576,6 +646,25 @@
                 <div class="chart-tooltip" id="chart-tooltip"></div>
             </div>
         </div>
+
+        <!-- 7-Day Forecast Predictions Table -->
+        <div class="forecast-table-container">
+            <h3 class="forecast-table-title">📊 Next 7 Days Forecast</h3>
+            <table class="forecast-table" id="forecast-table">
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Open</th>
+                        <th>Close</th>
+                        <th>High</th>
+                        <th>Low</th>
+                    </tr>
+                </thead>
+                <tbody id="forecast-table-body">
+                    <tr><td colspan="5" style="text-align: center; color: #888;">Loading forecast data...</td></tr>
+                </tbody>
+            </table>
+        </div>
     </div>
 
     <script>
@@ -825,6 +914,119 @@
         const chartWrapper = document.getElementById('chart-wrapper');
         const tooltip = document.getElementById('chart-tooltip');
 
+        // Store current forecast table data for sorting
+        let currentForecastData = [];
+        let forecastSortColumn = null;
+        let forecastSortAscending = true;
+
+        // Check if a date is a weekend (Saturday=6, Sunday=0)
+        function isWeekend(dateStr) {
+            const date = new Date(dateStr);
+            const dayOfWeek = date.getDay();
+            return dayOfWeek === 0 || dayOfWeek === 6; // Sunday or Saturday
+        }
+
+        // Render forecast table rows
+        function renderForecastTable(dataToRender) {
+            const tableBody = document.getElementById('forecast-table-body');
+            if (dataToRender.length === 0) {
+                tableBody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: #888;">No forecast data available</td></tr>';
+                return;
+            }
+
+            const rows = dataToRender.map(pred => {
+                const closeUpFromOpen = pred.close >= pred.open;
+                const colorClass = closeUpFromOpen ? 'price-up' : 'price-down';
+                return `
+                    <tr>
+                        <td>${pred.date || 'N/A'}</td>
+                        <td>$${(pred.open || 0).toFixed(2)}</td>
+                        <td class="${colorClass}">$${(pred.close || 0).toFixed(2)}</td>
+                        <td>$${(pred.high || 0).toFixed(2)}</td>
+                        <td>$${(pred.low || 0).toFixed(2)}</td>
+                    </tr>
+                `;
+            }).join('');
+
+            tableBody.innerHTML = rows;
+        }
+
+        // Sort forecast table by column
+        function sortForecastTable(column) {
+            const columnIndex = { 'date': 'date', 'open': 'open', 'close': 'close', 'high': 'high', 'low': 'low' };
+            const key = columnIndex[column];
+
+            // Toggle sort direction if same column clicked
+            if (forecastSortColumn === key) {
+                forecastSortAscending = !forecastSortAscending;
+            } else {
+                forecastSortColumn = key;
+                forecastSortAscending = true;
+            }
+
+            // Sort data
+            const sorted = [...currentForecastData].sort((a, b) => {
+                let aVal = a[key];
+                let bVal = b[key];
+
+                // Convert to numbers for numeric columns
+                if (key !== 'date') {
+                    aVal = parseFloat(aVal) || 0;
+                    bVal = parseFloat(bVal) || 0;
+                }
+
+                if (forecastSortAscending) {
+                    return aVal < bVal ? -1 : (aVal > bVal ? 1 : 0);
+                } else {
+                    return aVal > bVal ? -1 : (aVal < bVal ? 1 : 0);
+                }
+            });
+
+            renderForecastTable(sorted);
+        }
+
+        // Populate 7-day forecast table below chart (weekdays only)
+        function populateForecastTable() {
+            const tableBody = document.getElementById('forecast-table-body');
+            if (!predictionsData || predictionsData.length === 0) {
+                tableBody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: #888;">No forecast data available</td></tr>';
+                return;
+            }
+
+            // Get only forecast candles (those with indices > historical_count from meta)
+            const historicalCount = chartMeta ? chartMeta.historical_count : chartData.length;
+            let forecastData = predictionsData.filter(p => p.index > historicalCount);
+
+            // Filter out weekends (Saturdays and Sundays)
+            forecastData = forecastData.filter(p => !isWeekend(p.date));
+
+            // Keep only next 7 trading days
+            forecastData = forecastData.slice(0, 7);
+
+            if (forecastData.length === 0) {
+                tableBody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: #888;">No forecast data available</td></tr>';
+                return;
+            }
+
+            // Store for sorting
+            currentForecastData = forecastData;
+            forecastSortColumn = null;
+            forecastSortAscending = true;
+
+            renderForecastTable(forecastData);
+
+            // Add click handlers to column headers for sorting
+            const headers = document.querySelectorAll('.forecast-table th');
+            headers.forEach(header => {
+                header.style.cursor = 'pointer';
+                header.style.userSelect = 'none';
+                header.addEventListener('click', function() {
+                    const columnName = this.textContent.trim().toLowerCase();
+                    sortForecastTable(columnName);
+                });
+            });
+        }
+
         // Load chart data for tooltips
         function loadChartData() {
             fetch('/api/chart-data/' + chartKey)
@@ -839,6 +1041,8 @@
                     if (result.meta && result.meta.x_max !== undefined) {
                         chartMeta = result.meta;
                     }
+                    // Populate the forecast table after data is loaded
+                    populateForecastTable();
                 })
                 .catch(err => console.log('Chart data not available'));
         }
@@ -873,7 +1077,9 @@
 
             const showHistoricalCheckbox = document.getElementById('show-historical-predictions');
             const historicalOn = showHistoricalCheckbox && showHistoricalCheckbox.checked && predictionsData.length > 0;
-            const pred = historicalOn ? predictionsData.find(p => p.index === dataIndex) : null;
+            // Always look up predictions (both historical and forecast) regardless of checkbox state.
+            // Forecast tooltips should show even if "Show Historical Predictions" is unchecked.
+            const pred = predictionsData.length > 0 ? predictionsData.find(p => p.index === dataIndex) : null;
 
             let tooltipHTML = null;
 
@@ -908,7 +1114,8 @@
                     </div>
                 `;
 
-                if (pred) {
+                if (pred && historicalOn) {
+                    // Only show "Historical Prediction" section if show_historical checkbox is enabled
                     let predHTML = '<div class="tooltip-row" style="margin-top: 6px; padding-top: 6px; border-top: 1px solid #444;">';
                     predHTML += '<span style="font-size: 9px; color: #888;">— Historical Prediction —</span></div>';
                     if (pred.open !== undefined) {
@@ -941,10 +1148,11 @@
                     }
                     tooltipHTML += predHTML;
                 }
-            } else if (pred && pred.line_close !== undefined) {
+            } else if (pred && (pred.open !== undefined || pred.line_close !== undefined)) {
                 // Forecast side (past "today", no real data): the forecast candle itself
                 // is blue, so its OHLC + the smoothed trend are all shown in blue too —
                 // no green/red block since there's nothing "actual" out here.
+                // Show tooltips for any forecast candle with either OHLC data or trend data.
                 tooltipHTML = '';
                 if (pred.date) {
                     tooltipHTML += `<div class="tooltip-date" style="color: #4a90e2;">${pred.date}</div>`;
@@ -977,12 +1185,14 @@
                         `;
                     }
                 }
-                tooltipHTML += `
-                    <div class="tooltip-row">
-                        <span class="tooltip-label" style="color: #4a90e2;">Trend (smoothed)</span>
-                        <span class="tooltip-value" style="color: #4a90e2;">$${pred.line_close.toFixed(2)}</span>
-                    </div>
-                `;
+                if (pred.line_close !== undefined) {
+                    tooltipHTML += `
+                        <div class="tooltip-row">
+                            <span class="tooltip-label" style="color: #4a90e2;">Trend (smoothed)</span>
+                            <span class="tooltip-value" style="color: #4a90e2;">$${pred.line_close.toFixed(2)}</span>
+                        </div>
+                    `;
+                }
             }
 
             if (tooltipHTML) {

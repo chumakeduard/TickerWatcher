@@ -345,18 +345,25 @@ def draw_chart(ticker, period_name, period_days, grouping='daily', include_forec
                 seed = int(hashlib.md5(seed_str.encode()).hexdigest(), 16) % (2**32)
                 rng = np.random.RandomState(seed)
 
-                for i in range(forecast_days):
-                    forecast_date = last_date + timedelta(days=i+1)
-                    day_vol = per_day_vol[i] if i < len(per_day_vol) else per_day_vol[-1]
+                # Generate forecast only for weekdays (skip Saturdays and Sundays)
+                day_offset = 1
+                vol_index = 0
+                while len(forecast_data['closes']) < forecast_days:
+                    forecast_date = last_date + timedelta(days=day_offset)
+                    # Skip weekends (5=Saturday, 6=Sunday)
+                    if forecast_date.weekday() not in (5, 6):
+                        day_vol = per_day_vol[vol_index] if vol_index < len(per_day_vol) else per_day_vol[-1]
 
-                    drift_component = current_price * drift
-                    shock_component = rng.normal(0, day_vol * current_price)
-                    price_change = drift_component + shock_component
-                    current_price = max(current_price + price_change, 0.01)
+                        drift_component = current_price * drift
+                        shock_component = rng.normal(0, day_vol * current_price)
+                        price_change = drift_component + shock_component
+                        current_price = max(current_price + price_change, 0.01)
 
-                    forecast_data['dates'].append(forecast_date.strftime('%Y-%m-%d'))
-                    forecast_data['closes'].append(current_price)
-                    forecast_data['volatility'].append(day_vol)
+                        forecast_data['dates'].append(forecast_date.strftime('%Y-%m-%d'))
+                        forecast_data['closes'].append(current_price)
+                        forecast_data['volatility'].append(day_vol)
+                        vol_index += 1
+                    day_offset += 1
         except Exception as e:
             logger.warning(f"Could not generate GARCH forecast for {ticker}: {e}")
             forecast_data = None
@@ -579,6 +586,36 @@ def draw_chart(ticker, period_name, period_days, grouping='daily', include_forec
                           ncol=2, fontsize=9, frameon=False, labelcolor='white')
         except Exception:
             pass  # Silently skip if historical predictions fail
+
+    # ALWAYS add forecast OHLC data to predictions array for tooltips on forecast candles,
+    # even if show_historical=False or len(dates) <= 50. This ensures forecast candles
+    # have tooltips regardless of the historical prediction display status.
+    if forecast_ohlc_by_index and not show_historical:
+        # If show_historical was false, historical_predictions is empty, so populate it with forecast data only
+        historical_predictions = [
+            {'index': idx, 'open': data['open'], 'high': data['high'], 'low': data['low'],
+             'close': data['close'], 'date': data['date']}
+            for idx, data in sorted(forecast_ohlc_by_index.items())
+        ]
+    elif forecast_ohlc_by_index and show_historical and len(dates) <= 50:
+        # show_historical=True but dates too short for historical predictions to run.
+        # Add forecast data to the existing (now partially populated) historical_predictions array.
+        for idx, data in sorted(forecast_ohlc_by_index.items()):
+            # Check if this forecast entry already exists (added by hist_line loop above)
+            existing = next((p for p in historical_predictions if p.get('index') == idx), None)
+            if existing:
+                # Update with OHLC and date if not already present
+                if 'open' not in existing:
+                    existing.update({'open': data['open'], 'high': data['high'],
+                                   'low': data['low'], 'close': data['close']})
+                if 'date' not in existing:
+                    existing['date'] = data['date']
+            else:
+                # Add new entry for this forecast index
+                historical_predictions.append(
+                    {'index': idx, 'open': data['open'], 'high': data['high'], 'low': data['low'],
+                     'close': data['close'], 'date': data['date']}
+                )
 
     # Extend x-axis to include forecast
     x_max = len(dates) + (forecast_days if forecast_data else 0) + 1
