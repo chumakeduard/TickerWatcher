@@ -6,7 +6,7 @@ from io import BytesIO
 import os
 import threading
 from datetime import datetime
-from config import TICKERS, CRYPTO
+from config import TICKERS, CRYPTO, DEFAULT_TICKER
 from draw import draw_chart, NoDataError
 from garch.garch_model import forecast_volatility, get_garch_stats
 from logging_config import get_app_logger
@@ -334,8 +334,8 @@ def get_profit_pct(query_val):
 
 @app.route('/')
 def index():
-    """Home page - redirect to first stock ticker."""
-    return redirect(url_for('chart', ticker=TICKERS[0], asset_type='stock'))
+    """Home page - redirect to the default stock ticker."""
+    return redirect(url_for('chart', ticker=DEFAULT_TICKER, asset_type='stock'))
 
 
 @app.route('/chart')
@@ -344,7 +344,10 @@ def chart():
     # Determine asset type and get appropriate default ticker
     asset_type = request.args.get('asset_type', 'stock')  # 'stock' or 'crypto'
     all_tickers = CRYPTO if asset_type == 'crypto' else TICKERS
-    default_ticker = all_tickers[0] if all_tickers else TICKERS[0]
+    if asset_type == 'crypto':
+        default_ticker = all_tickers[0] if all_tickers else DEFAULT_TICKER
+    else:
+        default_ticker = DEFAULT_TICKER if DEFAULT_TICKER in all_tickers else (all_tickers[0] if all_tickers else DEFAULT_TICKER)
 
     ticker = request.args.get('ticker', default_ticker).upper()
     period = request.args.get('period', '6M')

@@ -589,7 +589,7 @@
             <!-- Stock Tickers -->
             <div class="ticker-list {% if asset_type == 'crypto' %}hidden{% endif %}" id="stock-ticker-list">
                 {% for t in tickers %}
-                <a href="{{ url_for('chart', ticker=t, period=period, threshold=threshold_pct, forecast_days=effective_forecast_days, profit_pct=profit_pct, garch_p=garch_p, garch_q=garch_q, vol_model=vol_model, vol_scale=vol_scale, asset_type='stock') }}" class="ticker-item {% if t == ticker and asset_type == 'stock' %}active{% endif %}">
+                <a href="{{ url_for('chart', ticker=t, period=period, threshold=threshold_pct, forecast_days=effective_forecast_days, profit_pct=profit_pct, garch_p=garch_p, garch_q=garch_q, vol_model=vol_model, vol_scale=vol_scale, show_historical=('1' if show_historical else '0'), show_signals=('1' if show_signals else '0'), asset_type='stock') }}" class="ticker-item {% if t == ticker and asset_type == 'stock' %}active{% endif %}">
                     {{ t }}
                 </a>
                 {% endfor %}
@@ -598,7 +598,7 @@
             <!-- Crypto Tickers -->
             <div class="ticker-list {% if asset_type != 'crypto' %}hidden{% endif %}" id="crypto-ticker-list">
                 {% for t in crypto_tickers %}
-                <a href="{{ url_for('chart', ticker=t, period=period, threshold=threshold_pct, forecast_days=effective_forecast_days, profit_pct=profit_pct, garch_p=garch_p, garch_q=garch_q, vol_model=vol_model, vol_scale=vol_scale, asset_type='crypto') }}" class="ticker-item {% if t == ticker and asset_type == 'crypto' %}active{% endif %}">
+                <a href="{{ url_for('chart', ticker=t, period=period, threshold=threshold_pct, forecast_days=effective_forecast_days, profit_pct=profit_pct, garch_p=garch_p, garch_q=garch_q, vol_model=vol_model, vol_scale=vol_scale, show_historical=('1' if show_historical else '0'), show_signals=('1' if show_signals else '0'), asset_type='crypto') }}" class="ticker-item {% if t == ticker and asset_type == 'crypto' %}active{% endif %}">
                     {{ t }}
                 </a>
                 {% endfor %}
@@ -610,7 +610,7 @@
             <div class="sidebar-title">📅 Time Period</div>
             <div class="button-group">
                 {% for p in periods %}
-                <button class="selector-btn {% if p == period %}active{% endif %}" onclick="window.location.href = '{{ url_for('chart', ticker=ticker, period=p, threshold=threshold_pct, forecast_days=effective_forecast_days, profit_pct=profit_pct, garch_p=garch_p, garch_q=garch_q, vol_model=vol_model, vol_scale=vol_scale, asset_type=asset_type) }}'">{{ p }}</button>
+                <button class="selector-btn {% if p == period %}active{% endif %}" onclick="window.location.href = '{{ url_for('chart', ticker=ticker, period=p, threshold=threshold_pct, forecast_days=effective_forecast_days, profit_pct=profit_pct, garch_p=garch_p, garch_q=garch_q, vol_model=vol_model, vol_scale=vol_scale, show_historical=('1' if show_historical else '0'), show_signals=('1' if show_signals else '0'), asset_type=asset_type) }}'">{{ p }}</button>
                 {% endfor %}
             </div>
         </div>
